@@ -1,0 +1,22 @@
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+
+let browserClient: SupabaseClient | null | undefined;
+
+/** Cliente único no navegador (anon key + RLS). */
+export function getSupabaseBrowserClient(): SupabaseClient | null {
+  if (browserClient !== undefined) return browserClient;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) {
+    browserClient = null;
+    return null;
+  }
+  browserClient = createClient(url, key);
+  return browserClient;
+}
+
+export function isSupabaseConfigured(): boolean {
+  return !!(
+    process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  );
+}

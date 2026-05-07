@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Controle de chumbo
 
-## Getting Started
+Protótipo **offline-first** (IndexedDB via Dexie) com opcional **sync na nuvem** (Supabase).
 
-First, run the development server:
+## Rodar localmente
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Abra [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Variáveis de ambiente (nuvem)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Copie `.env.example` para `.env.local` e preencha com o projeto Supabase:
 
-## Learn More
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
-To learn more about Next.js, take a look at the following resources:
+Sem essas variáveis o app funciona **somente local** (Dexie), com um aviso na tela.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Supabase (primeira vez)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Crie um projeto em [supabase.com](https://supabase.com).
+2. No **SQL Editor**, execute o script versionado em [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql) (tabelas, RLS, triggers e Realtime).
+3. Em **Authentication → Providers**, habilite **Email**.
+4. Em **Authentication → Users**, crie um usuário (e-mail/senha) para você — não há tela de cadastro público no app.
+5. Cole URL e anon key no `.env.local` e na Vercel (abaixo).
 
-## Deploy on Vercel
+## Deploy na Vercel (Fase 1)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Envie o código para um repositório GitHub (recomendado privado).
+2. Em [vercel.com](https://vercel.com) → **Add New Project** → importe o repo (framework Next.js detectado).
+3. Configure as mesmas env vars (`NEXT_PUBLIC_SUPABASE_*`) em **Settings → Environment Variables**.
+4. Cada `git push` na branch ligada gera um novo deploy.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Sync após deploy
+
+1. Abra a URL da Vercel no celular e no PC.
+2. Faça login com o usuário criado no Supabase.
+3. Na primeira vez com dados só no navegador, use **“Subir dados locais para a nuvem”** em cada aparelho que já tinha histórico local (ou só no que tem os dados “bons”).
+4. Operações do dia a dia já enfileiram na **outbox** e são enviadas quando online; o motor também assina **Realtime** para receber mudanças do outro dispositivo.
+
+## PWA
+
+O arquivo [`public/manifest.webmanifest`](public/manifest.webmanifest) permite “instalar” o site no celular (ícones são placeholders; substitua por PNG 192/512 quando quiser).
+
+## Documentação de domínio
+
+Ver [`PROJECT_MAP.md`](PROJECT_MAP.md).
