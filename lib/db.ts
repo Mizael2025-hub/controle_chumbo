@@ -91,6 +91,27 @@ export class LeadControlDB extends Dexie {
             r.updated_at ??= null;
           });
       });
+    const stampUpdatedAt = () => new Date().toISOString();
+    this.leadAlloys.hook("creating", (_pk, obj) => {
+      const r = obj as LeadAlloy;
+      if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
+    });
+    this.leadBatches.hook("creating", (_pk, obj) => {
+      const r = obj as LeadBatch;
+      if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
+    });
+    this.leadPiles.hook("creating", (_pk, obj) => {
+      const r = obj as LeadPile;
+      if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
+    });
+    this.leadTransactions.hook("creating", (_pk, obj) => {
+      const r = obj as LeadTransaction;
+      if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
+    });
+    this.leadPileEvents.hook("creating", (_pk, obj) => {
+      const r = obj as LeadPileEvent;
+      if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
+    });
   }
 }
 

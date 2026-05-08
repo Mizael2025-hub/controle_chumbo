@@ -14,6 +14,7 @@ import { CadastrosView } from "@/components/CadastrosView";
 import { ReleaseModal } from "@/components/ReleaseModal";
 import { ReservationModal } from "@/components/ReservationModal";
 import { useAuthUser } from "@/components/AuthUserContext";
+import { SyncStatusIndicator } from "@/components/SyncStatusIndicator";
 import { enqueueAllDexieRows } from "@/lib/bulkEnqueueDexie";
 import { flushOutbox } from "@/lib/syncEngine";
 
@@ -659,6 +660,8 @@ export function LeadApp(props: LeadAppProps = {}) {
           </>
         )}
       </div>
+
+      <SyncStatusIndicator />
 
       <ReleaseModal
         open={releaseOpen}

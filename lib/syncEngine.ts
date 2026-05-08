@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { syncActivityEnter, syncActivityLeave } from "@/lib/syncActivity";
 import { db } from "@/lib/db";
+import { enqueueUpsert } from "@/lib/syncOutbox";
 import type {
   LeadAlloy,
   LeadBatch,
@@ -31,6 +33,102 @@ const MAX_PUSH_ATTEMPTS = 5;
 export type SyncEngineCallbacks = {
   onPushError?: (message: string) => void;
 };
+export type StartSyncEngineOptions = {
+  /** Após o primeiro pull + flush bem-sucedidos (ex.: reconciliação Dexie × Postgres). */
+  afterInitialSync?: () => Promise<void>;
+};
+
+/** Liga → lote → monte (ordem compatível com FKs no Postgres). */
+const FORCE_FULL_PUSH_TABLES = ["leadAlloys", "leadBatches", "leadPiles"] as const;
+
+function isoOrEmpty(v: string | null | undefined): string {
+  return v ?? "";
+}
+
+/** Ausente no servidor ou `updated_at` local estritamente maior (LWW). */
+function shouldEnqueueFullPush(
+  localIso: string | null | undefined,
+  remote: { updated_at?: string } | null,
+): boolean {
+  if (!remote) return true;
+  return isoOrEmpty(localIso) > isoOrEmpty(remote.updated_at);
+}
+
+type FullPushEntityTable = (typeof FORCE_FULL_PUSH_TABLES)[number];
+
+async function persistStampedAndEnqueue(
+  table: FullPushEntityTable,
+  row: LeadAlloy | LeadBatch | LeadPile,
+): Promise<void> {
+  const ts = new Date().toISOString();
+  switch (table) {
+    case "leadAlloys": {
+      const r = row as LeadAlloy;
+      const next: LeadAlloy = { ...r, updated_at: r.updated_at ?? ts };
+      await db.leadAlloys.put(next);
+      await enqueueUpsert("leadAlloys", next);
+      return;
+    }
+    case "leadBatches": {
+      const r = row as LeadBatch;
+      const next: LeadBatch = { ...r, updated_at: r.updated_at ?? ts };
+      await db.leadBatches.put(next);
+      await enqueueUpsert("leadBatches", next);
+      return;
+    }
+    case "leadPiles": {
+      const r = row as LeadPile;
+      const next: LeadPile = { ...r, updated_at: r.updated_at ?? ts };
+      await db.leadPiles.put(next);
+      await enqueueUpsert("leadPiles", next);
+      return;
+    }
+  }
+}
+
+/**
+ * Compara Dexie × Supabase por id/owner_id e reenfileira upserts ausentes ou com `updated_at`
+ * local mais recente (pré-sync ou fila descartada após falhas).
+ */
+export async function forceFullPush(
+  supabase: SupabaseClient,
+  ownerId: string,
+): Promise<void> {
+  for (const table of FORCE_FULL_PUSH_TABLES) {
+    const name = remoteTableName(table);
+    let rows: (LeadAlloy | LeadBatch | LeadPile)[] = [];
+    switch (table) {
+      case "leadAlloys":
+        rows = await db.leadAlloys.toArray();
+        break;
+      case "leadBatches":
+        rows = await db.leadBatches.toArray();
+        break;
+      case "leadPiles":
+        rows = await db.leadPiles.toArray();
+        break;
+    }
+
+    for (const row of rows) {
+      const { data: remote, error } = await supabase
+        .from(name)
+        .select("id,updated_at")
+        .eq("id", row.id)
+        .eq("owner_id", ownerId)
+        .maybeSingle();
+
+      if (error) {
+        console.error("[syncEngine] forceFullPush select", table, error);
+        throw new Error(error.message);
+      }
+
+      if (!shouldEnqueueFullPush(row.updated_at, remote)) continue;
+
+      await persistStampedAndEnqueue(table, row);
+    }
+  }
+}
+
 
 function newerRemoteWins(remoteIso: string, localIso: string | null | undefined): boolean {
   if (!localIso) return true;
@@ -112,16 +210,21 @@ export async function pullAllRows(
   supabase: SupabaseClient,
   ownerId: string,
 ): Promise<void> {
-  for (const table of ALL_ENTITY_TABLES) {
-    const name = remoteTableName(table);
-    const { data, error } = await supabase.from(name).select("*").eq("owner_id", ownerId);
-    if (error) {
-      console.error("[syncEngine] pullAllRows", table, error);
-      throw new Error(error.message);
+  syncActivityEnter();
+  try {
+    for (const table of ALL_ENTITY_TABLES) {
+      const name = remoteTableName(table);
+      const { data, error } = await supabase.from(name).select("*").eq("owner_id", ownerId);
+      if (error) {
+        console.error("[syncEngine] pullAllRows", table, error);
+        throw new Error(error.message);
+      }
+      for (const raw of data ?? []) {
+        await applyMerged(table, raw as Record<string, unknown>);
+      }
     }
-    for (const raw of data ?? []) {
-      await applyMerged(table, raw as Record<string, unknown>);
-    }
+  } finally {
+    syncActivityLeave();
   }
 }
 
@@ -182,9 +285,14 @@ export async function flushOutbox(
   ownerId: string,
   callbacks?: SyncEngineCallbacks,
 ): Promise<void> {
-  for (let i = 0; i < 500; i++) {
-    const progressed = await processOneOutboxRow(supabase, ownerId, callbacks);
-    if (!progressed) break;
+  syncActivityEnter();
+  try {
+    for (let i = 0; i < 500; i++) {
+      const progressed = await processOneOutboxRow(supabase, ownerId, callbacks);
+      if (!progressed) break;
+    }
+  } finally {
+    syncActivityLeave();
   }
 }
 
@@ -199,6 +307,7 @@ export function startSyncEngine(
   supabase: SupabaseClient,
   ownerId: string,
   callbacks?: SyncEngineCallbacks,
+  options?: StartSyncEngineOptions,
 ): void {
   stopSyncEngine();
 
@@ -250,6 +359,7 @@ export function startSyncEngine(
     try {
       await pullAllRows(supabase, ownerId);
       await flushOutbox(supabase, ownerId, callbacks);
+      await options?.afterInitialSync?.();
     } catch (e) {
       console.error("[syncEngine] pull inicial:", e);
       callbacks?.onPushError?.(e instanceof Error ? e.message : String(e));
