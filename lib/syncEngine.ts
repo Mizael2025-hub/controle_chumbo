@@ -38,6 +38,97 @@ export type StartSyncEngineOptions = {
   afterInitialSync?: () => Promise<void>;
 };
 
+/**
+ * Re-enfileira (na outbox) tudo que existe localmente e ainda não está na fila.
+ * Útil quando RLS/credenciais estavam erradas e a outbox foi descartada após 5 falhas.
+ */
+export async function forceFullSync(): Promise<void> {
+  const nowIso = new Date().toISOString();
+
+  const existing = await db.syncOutbox.toArray();
+  const queuedUpserts = new Set<string>();
+  for (const r of existing) {
+    if (r.op !== "upsert") continue;
+    queuedUpserts.add(`${r.entity_table}:${r.entity_id}`);
+  }
+
+  const shouldQueue = (table: SyncEntityTable, id: string) =>
+    !queuedUpserts.has(`${table}:${id}`);
+
+  // Ordem respeita FKs no Postgres
+  const tables: SyncEntityTable[] = [
+    "leadAlloys",
+    "leadBatches",
+    "leadPiles",
+    "leadTransactions",
+    "leadPileEvents",
+  ];
+
+  for (const table of tables) {
+    switch (table) {
+      case "leadAlloys": {
+        const rows = await db.leadAlloys.toArray();
+        for (const row of rows) {
+          if (!row.id) continue;
+          if (!shouldQueue("leadAlloys", row.id)) continue;
+          const next: LeadAlloy = { ...row, updated_at: row.updated_at ?? nowIso };
+          if (!row.updated_at) await db.leadAlloys.put(next);
+          await enqueueUpsert("leadAlloys", next);
+        }
+        break;
+      }
+      case "leadBatches": {
+        const rows = await db.leadBatches.toArray();
+        for (const row of rows) {
+          if (!row.id) continue;
+          if (!shouldQueue("leadBatches", row.id)) continue;
+          const next: LeadBatch = { ...row, updated_at: row.updated_at ?? nowIso };
+          if (!row.updated_at) await db.leadBatches.put(next);
+          await enqueueUpsert("leadBatches", next);
+        }
+        break;
+      }
+      case "leadPiles": {
+        const rows = await db.leadPiles.toArray();
+        for (const row of rows) {
+          if (!row.id) continue;
+          if (!shouldQueue("leadPiles", row.id)) continue;
+          const next: LeadPile = { ...row, updated_at: row.updated_at ?? nowIso };
+          if (!row.updated_at) await db.leadPiles.put(next);
+          await enqueueUpsert("leadPiles", next);
+        }
+        break;
+      }
+      case "leadTransactions": {
+        const rows = await db.leadTransactions.toArray();
+        for (const row of rows) {
+          if (!row.id) continue;
+          if (!shouldQueue("leadTransactions", row.id)) continue;
+          const next: LeadTransaction = { ...row, updated_at: row.updated_at ?? nowIso };
+          if (!row.updated_at) await db.leadTransactions.put(next);
+          await enqueueUpsert("leadTransactions", next);
+        }
+        break;
+      }
+      case "leadPileEvents": {
+        const rows = await db.leadPileEvents.toArray();
+        for (const row of rows) {
+          if (!row.id) continue;
+          if (!shouldQueue("leadPileEvents", row.id)) continue;
+          const next: LeadPileEvent = { ...row, updated_at: row.updated_at ?? nowIso };
+          if (!row.updated_at) await db.leadPileEvents.put(next);
+          await enqueueUpsert("leadPileEvents", next);
+        }
+        break;
+      }
+      default: {
+        const _exhaustive: never = table;
+        return _exhaustive;
+      }
+    }
+  }
+}
+
 /** Liga → lote → monte (ordem compatível com FKs no Postgres). */
 const FORCE_FULL_PUSH_TABLES = ["leadAlloys", "leadBatches", "leadPiles"] as const;
 

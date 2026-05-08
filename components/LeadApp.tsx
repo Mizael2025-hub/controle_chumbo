@@ -16,7 +16,7 @@ import { ReservationModal } from "@/components/ReservationModal";
 import { useAuthUser } from "@/components/AuthUserContext";
 import { SyncStatusIndicator } from "@/components/SyncStatusIndicator";
 import { enqueueAllDexieRows } from "@/lib/bulkEnqueueDexie";
-import { flushOutbox } from "@/lib/syncEngine";
+import { flushOutbox, forceFullSync } from "@/lib/syncEngine";
 
 const EMPTY_PILES: LeadPile[] = [];
 const EMPTY_ALLOYS: LeadAlloy[] = [];
@@ -323,6 +323,43 @@ export function LeadApp(props: LeadAppProps = {}) {
               className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50 dark:bg-emerald-600"
             >
               {cloudBusy ? "Enviando…" : "Subir dados locais para a nuvem"}
+            </button>
+            <button
+              type="button"
+              disabled={cloudBusy}
+              onClick={async () => {
+                setCloudBusy(true);
+                try {
+                  await forceFullSync();
+                  await flushOutbox(supabase, userId, {
+                    onPushError: (m) => setGlobalError(m),
+                  });
+                  window.alert("Sincronização completa enfileirada e enviada (confira se está online).");
+                } catch (e) {
+                  console.error("[LeadApp] sync tudo:", e);
+                  setGlobalError(e instanceof Error ? e.message : "Falha ao sincronizar tudo.");
+                } finally {
+                  setCloudBusy(false);
+                }
+              }}
+              className="inline-flex items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950/40 dark:text-zinc-100 dark:hover:bg-zinc-800"
+              title="Varre tudo no banco local e reenfileira o que não está na outbox."
+            >
+              <svg
+                className="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden
+              >
+                <path
+                  d="M7 18a4 4 0 01.8-7.9A5 5 0 0117 9a4 4 0 011 7H7z"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              Sincronizar Tudo
             </button>
             <button
               type="button"
