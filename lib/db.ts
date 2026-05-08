@@ -1,4 +1,5 @@
 import Dexie, { type Table } from "dexie";
+import { uuidV4 } from "@/lib/uuid";
 import type {
   LeadAlloy,
   LeadBatch,
@@ -91,25 +92,37 @@ export class LeadControlDB extends Dexie {
             r.updated_at ??= null;
           });
       });
+    const makeUuid = (): string => {
+      const c = globalThis.crypto as Crypto | undefined;
+      if (c && typeof (c as Crypto & { randomUUID?: () => string }).randomUUID === "function") {
+        return (c as Crypto & { randomUUID: () => string }).randomUUID();
+      }
+      return uuidV4();
+    };
     const stampUpdatedAt = () => new Date().toISOString();
     this.leadAlloys.hook("creating", (_pk, obj) => {
       const r = obj as LeadAlloy;
+      if (!r.id) r.id = makeUuid();
       if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
     });
     this.leadBatches.hook("creating", (_pk, obj) => {
       const r = obj as LeadBatch;
+      if (!r.id) r.id = makeUuid();
       if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
     });
     this.leadPiles.hook("creating", (_pk, obj) => {
       const r = obj as LeadPile;
+      if (!r.id) r.id = makeUuid();
       if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
     });
     this.leadTransactions.hook("creating", (_pk, obj) => {
       const r = obj as LeadTransaction;
+      if (!r.id) r.id = makeUuid();
       if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
     });
     this.leadPileEvents.hook("creating", (_pk, obj) => {
       const r = obj as LeadPileEvent;
+      if (!r.id) r.id = makeUuid();
       if (r.updated_at == null || r.updated_at === "") r.updated_at = stampUpdatedAt();
     });
   }
