@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "@/lib/db";
-import { seedIfEmpty } from "@/lib/seed";
 import { computeBatchStock } from "@/lib/batchTotals";
 import { cancelReservation } from "@/lib/reservePiles";
 import type { LeadAlloy, LeadBatch, LeadPile, LeadPileEvent, LeadTransaction } from "@/lib/types";
@@ -60,7 +59,6 @@ export function LeadApp(props: LeadAppProps = {}) {
     let cancelled = false;
     (async () => {
       try {
-        await seedIfEmpty();
         if (cancelled) return;
         const all = await db.leadAlloys.orderBy("name").toArray();
         const firstId = all[0]?.id ?? null;
