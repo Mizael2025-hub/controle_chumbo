@@ -203,6 +203,9 @@ export function CadastrosView({ onError, onGoToEstoque }: Props) {
             </div>
 
             <div className="min-h-0 flex-1 rounded-xl border border-zinc-200 bg-white/60 p-3 dark:border-zinc-700 dark:bg-zinc-950/20">
+              <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+                Toque numa célula para preencher ou corrigir kg e barras antes de cadastrar o lote.
+              </p>
               <div className="h-full overflow-auto overscroll-contain">
                 <BatchEntryGrid value={draftPiles} onChange={setDraftPiles} />
               </div>

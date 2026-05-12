@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { syncActivityEnter, syncActivityLeave } from "@/lib/syncActivity";
 import { db } from "@/lib/db";
+import { clearOutboxFlushRunner, setOutboxFlushRunner } from "@/lib/syncFlushScheduler";
 import { enqueueUpsert } from "@/lib/syncOutbox";
 import type {
   LeadAlloy,
@@ -682,24 +683,51 @@ async function processOneOutboxRow(
   }
 
   const msg = normalizeSupabaseErrorMessage(lastErr);
+  const transient = lastErr != null && isTransientNetworkError(lastErr);
+  const immediate = lastErr != null && shouldSurfaceSyncFailureImmediately(lastErr);
+
+  if (transient) {
+    syncLog("outbox-send-net-hold", "Envio: rede/transiente — mantendo item na fila", {
+      entity_table: row.entity_table,
+      entity_id: row.entity_id,
+      last_error: msg,
+    });
+    await db.syncOutbox.update(outboxId, {
+      last_error: msg,
+    });
+    return false;
+  }
+
   syncLog("outbox-send-fail", "Envio: falha registrada na fila (aguardando nova rodada)", {
     entity_table: row.entity_table,
     entity_id: row.entity_id,
     last_error: msg,
   });
 
-  const nextAttempt = (row.attempt_count ?? 0) + 1;
+  const prevAttempts = row.attempt_count ?? 0;
+  const nextAttempt = immediate ? prevAttempts : Math.min(prevAttempts + 1, MAX_PUSH_ATTEMPTS);
   await db.syncOutbox.update(outboxId, {
     attempt_count: nextAttempt,
     last_error: msg,
   });
-  if (nextAttempt >= MAX_PUSH_ATTEMPTS) {
-    await db.syncOutbox.delete(outboxId);
+  if (!immediate && prevAttempts + 1 >= MAX_PUSH_ATTEMPTS && nextAttempt === MAX_PUSH_ATTEMPTS) {
     callbacks?.onPushError?.(
-      `Sync: falha após ${MAX_PUSH_ATTEMPTS} tentativas (${row.entity_table} ${row.entity_id}): ${msg}`,
+      `Sync: não foi possível enviar após ${MAX_PUSH_ATTEMPTS} tentativas (${row.entity_table} ${row.entity_id}). A fila foi mantida. Último erro: ${msg}`,
     );
   }
   return false;
+}
+
+/** Pull remoto, re-enfileira o que falta e drena a outbox (ação manual única na UI). */
+export async function runManualCloudReconciliation(
+  supabase: SupabaseClient,
+  ownerId: string,
+  callbacks?: SyncEngineCallbacks,
+): Promise<void> {
+  await pullAllRows(supabase, ownerId);
+  await forceFullPush(supabase, ownerId);
+  await flushOutbox(supabase, ownerId, callbacks);
+  await flushOutbox(supabase, ownerId, callbacks);
 }
 
 export async function flushOutbox(
@@ -734,6 +762,7 @@ export async function flushOutbox(
 let cleanupFn: (() => void) | null = null;
 
 export function stopSyncEngine(): void {
+  clearOutboxFlushRunner();
   cleanupFn?.();
   cleanupFn = null;
 }
@@ -747,9 +776,23 @@ export function startSyncEngine(
   stopSyncEngine();
 
   const onOnline = () => {
-    syncLog("browser-online", "Navegador online — disparando flushOutbox");
-    void flushOutbox(supabase, ownerId, callbacks);
+    syncLog("browser-online", "Navegador online — reset da fila + flushOutbox");
+    void (async () => {
+      try {
+        await db.syncOutbox.toCollection().modify((r) => {
+          r.attempt_count = 0;
+          r.last_error = null;
+        });
+      } catch (e) {
+        console.error("[syncEngine] reset outbox ao voltar online", e);
+      }
+      await flushOutbox(supabase, ownerId, callbacks);
+    })();
   };
+
+  setOutboxFlushRunner(() => {
+    void flushOutbox(supabase, ownerId, callbacks);
+  });
 
   const channel = supabase.channel(`sync:${ownerId}`);
 

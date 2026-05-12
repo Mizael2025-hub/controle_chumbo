@@ -166,6 +166,7 @@ type Props = {
   onRequestCancelReservation: (pileId: string) => void;
   onRequestHistory: (pileId: string) => void;
   onRequestSelectMore: () => void;
+  onRequestEditPile?: (pileId: string) => void;
 };
 
 /** Grade até 7×4; seleção por clique; menu por 2º clique. */
@@ -180,6 +181,7 @@ export function PileGrid({
   onRequestCancelReservation,
   onRequestHistory,
   onRequestSelectMore,
+  onRequestEditPile,
 }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -226,6 +228,10 @@ export function PileGrid({
     menuPile &&
     menuPile.status !== "CONSUMED" &&
     (menuPile.reserved_for != null || menuPile.status === "RESERVED");
+  const canEditQuantities =
+    Boolean(onRequestEditPile) &&
+    menuPile &&
+    (menuPile.status === "AVAILABLE" || menuPile.status === "RESERVED");
 
   const openMenu = (pileId: string, anchorRect: DOMRect) => {
     setMenuPileId(pileId);
@@ -333,6 +339,18 @@ export function PileGrid({
               Ações do monte
             </div>
             <div className="grid gap-1">
+              {canEditQuantities && (
+                <button
+                  type="button"
+                  className="rounded-lg px-2 py-2 text-left text-sm font-medium text-zinc-800 hover:bg-zinc-100 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                  onClick={() => {
+                    onRequestEditPile?.(menuPileId);
+                    closeMenu();
+                  }}
+                >
+                  Corrigir peso/barras
+                </button>
+              )}
               {canReserveFromMenu && (
                 <button
                   type="button"

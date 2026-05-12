@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { flushOutbox, forceFullPush, startSyncEngine, stopSyncEngine } from "@/lib/syncEngine";
+import { notifyOutboxMayHaveNewWork } from "@/lib/syncFlushScheduler";
 
 type Props = {
   supabase: SupabaseClient;
@@ -17,6 +18,16 @@ const SESSION_FORCE_PUSH_KEY = "lead_force_full_push_v1";
 export function SyncProvider({ supabase, userId, onSyncError, children }: Props) {
   const onSyncErrorRef = useRef(onSyncError);
   onSyncErrorRef.current = onSyncError;
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      if (typeof navigator !== "undefined" && !navigator.onLine) return;
+      notifyOutboxMayHaveNewWork();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [userId]);
 
   useEffect(() => {
     const sessionKey = `${SESSION_FORCE_PUSH_KEY}_${userId}`;

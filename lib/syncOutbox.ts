@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { notifyOutboxMayHaveNewWork } from "@/lib/syncFlushScheduler";
 import type { SyncEntityTable, SyncOutboxRow } from "@/lib/types";
 
 function outboxLog(action: string, detail: Record<string, unknown>): void {
@@ -24,6 +25,7 @@ export async function enqueueUpsert(table: SyncEntityTable, row: { id: string })
     entity_id: row.id,
     pending_rows: pending,
   });
+  notifyOutboxMayHaveNewWork();
 }
 
 /** Enfileira exclusão remota (após exclusão local bem-sucedida). */
@@ -44,4 +46,5 @@ export async function enqueueDelete(table: SyncEntityTable, entityId: string): P
     entity_id: entityId,
     pending_rows: pending,
   });
+  notifyOutboxMayHaveNewWork();
 }

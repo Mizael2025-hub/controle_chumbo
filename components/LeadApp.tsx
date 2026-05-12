@@ -7,6 +7,7 @@ import { computeBatchStock } from "@/lib/batchTotals";
 import { cancelReservation } from "@/lib/reservePiles";
 import type { LeadAlloy, LeadBatch, LeadPile, LeadPileEvent, LeadTransaction } from "@/lib/types";
 import { formatIntPtBr, formatKgPtBr } from "@/lib/formatPtBr";
+import { updateBatchMetadata, updatePileQuantities } from "@/lib/inventoryEdit";
 import { ErrorBanner, type AppErrorBannerEntry } from "@/components/ErrorBanner";
 import {
   formatBannerDetail,
@@ -20,8 +21,7 @@ import { ReleaseModal } from "@/components/ReleaseModal";
 import { ReservationModal } from "@/components/ReservationModal";
 import { useAuthUser } from "@/components/AuthUserContext";
 import { SyncStatusIndicator } from "@/components/SyncStatusIndicator";
-import { enqueueAllDexieRows } from "@/lib/bulkEnqueueDexie";
-import { flushOutbox, forceFullPush, forceFullSync } from "@/lib/syncEngine";
+import { runManualCloudReconciliation } from "@/lib/syncEngine";
 
 const EMPTY_PILES: LeadPile[] = [];
 const EMPTY_ALLOYS: LeadAlloy[] = [];
@@ -50,6 +50,14 @@ export function LeadApp(props: LeadAppProps = {}) {
   const [historyFilter, setHistoryFilter] = useState("");
   const [historyPileId, setHistoryPileId] = useState<string | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
+  const [lastManualSyncAt, setLastManualSyncAt] = useState<Date | null>(null);
+  const [editBatch, setEditBatch] = useState<LeadBatch | null>(null);
+  const [editPile, setEditPile] = useState<LeadPile | null>(null);
+  const [batchEditNum, setBatchEditNum] = useState("");
+  const [batchEditArrival, setBatchEditArrival] = useState("");
+  const [pileKg, setPileKg] = useState("");
+  const [pileBars, setPileBars] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
 
   const { userId, supabase } = useAuthUser();
 
@@ -196,6 +204,18 @@ export function LeadApp(props: LeadAppProps = {}) {
     .map((id) => pilesRaw?.find((p) => p.id === id))
     .filter(Boolean) as LeadPile[];
 
+  useEffect(() => {
+    if (!editBatch) return;
+    setBatchEditNum(editBatch.batch_number);
+    setBatchEditArrival(editBatch.arrival_date);
+  }, [editBatch]);
+
+  useEffect(() => {
+    if (!editPile) return;
+    setPileKg(String(editPile.current_weight).replace(".", ","));
+    setPileBars(String(editPile.current_bars));
+  }, [editPile]);
+
   const formatIsoToBrDate = (isoDate: string): string => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate.trim());
     if (!m) return isoDate;
@@ -214,6 +234,11 @@ export function LeadApp(props: LeadAppProps = {}) {
       minute: "2-digit",
     }).format(d);
   };
+
+  const lastManualSyncLabel =
+    lastManualSyncAt == null
+      ? null
+      : `Última sincronização manual: ${formatIsoToBrDateTime(lastManualSyncAt.toISOString())}`;
 
   const batchUi = useMemo(() => {
     return batches
@@ -326,13 +351,24 @@ export function LeadApp(props: LeadAppProps = {}) {
   return (
     <div className="mx-auto flex min-h-[100svh] max-w-6xl flex-col px-4 pb-6">
       <div className="sticky top-0 z-30 -mx-4 border-b border-zinc-200 bg-white/90 px-4 pt-6 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
-        <header className="mb-4">
-          <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
-            Controle de chumbo
-          </h1>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            Protótipo offline (Dexie). Os dados ficam armazenados neste navegador.
-          </p>
+        <header className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
+              Controle de chumbo
+            </h1>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              Protótipo offline (Dexie). Os dados ficam armazenados neste navegador.
+            </p>
+          </div>
+          {userId && supabase && (
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              onClick={() => void supabase.auth.signOut()}
+            >
+              Sair
+            </button>
+          )}
         </header>
 
         <ErrorBanner
@@ -342,109 +378,24 @@ export function LeadApp(props: LeadAppProps = {}) {
         />
 
         {userId && supabase && (
-          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900/50">
-            <span className="text-zinc-600 dark:text-zinc-400">Nuvem (Supabase):</span>
-            <button
-              type="button"
-              disabled={cloudBusy}
-              onClick={async () => {
-                setCloudBusy(true);
-                try {
-                  await enqueueAllDexieRows();
-                  await flushOutbox(supabase, userId, {
-                    onPushError: (m) => reportMessage(m),
-                  });
-                  window.alert("Dados locais enfileirados e enviados (confira se está online).");
-                } catch (e) {
-                  reportCaught("Falha ao enviar dados locais para a nuvem", e);
-                } finally {
-                  setCloudBusy(false);
-                }
-              }}
-              className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50 dark:bg-emerald-600"
-            >
-              {cloudBusy ? "Enviando…" : "Subir dados locais para a nuvem"}
-            </button>
-            <button
-              type="button"
-              disabled={cloudBusy}
-              onClick={async () => {
-                setCloudBusy(true);
-                try {
-                  await forceFullPush(supabase, userId);
-                  await flushOutbox(supabase, userId, {
-                    onPushError: (m) => reportMessage(m),
-                  });
-                  window.alert("Forçando sincronia: dados enfileirados e enviados (confira se está online).");
-                } catch (e) {
-                  reportCaught("Falha ao forçar sincronização com a nuvem", e);
-                } finally {
-                  setCloudBusy(false);
-                }
-              }}
-              className="inline-flex items-center gap-2 rounded-md bg-sky-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-800 disabled:opacity-50 dark:bg-sky-600 dark:hover:bg-sky-500"
-              title="Enfileira upsert de tudo que existe no banco local e tenta enviar agora."
-            >
-              <svg
-                className="h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                aria-hidden
-              >
-                <path
-                  d="M7 18a4 4 0 01.8-7.9A5 5 0 0117 9a4 4 0 011 7H7z"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              Forçar Sincronia
-            </button>
-            <button
-              type="button"
-              disabled={cloudBusy}
-              onClick={async () => {
-                setCloudBusy(true);
-                try {
-                  await forceFullSync(supabase, userId);
-                  await flushOutbox(supabase, userId, {
-                    onPushError: (m) => reportMessage(m),
-                  });
-                  window.alert("Sincronização completa enfileirada e enviada (confira se está online).");
-                } catch (e) {
-                  reportCaught("Falha ao executar sincronização completa com a nuvem", e);
-                } finally {
-                  setCloudBusy(false);
-                }
-              }}
-              className="inline-flex items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950/40 dark:text-zinc-100 dark:hover:bg-zinc-800"
-              title="Varre tudo no banco local e reenfileira o que está sem updated_at ou ainda não existe no servidor."
-            >
-              <svg
-                className="h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                aria-hidden
-              >
-                <path
-                  d="M7 18a4 4 0 01.8-7.9A5 5 0 0117 9a4 4 0 011 7H7z"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              Sincronizar Agora
-            </button>
-            <button
-              type="button"
-              className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-              onClick={() => void supabase.auth.signOut()}
-            >
-              Sair
-            </button>
-          </div>
+          <SyncStatusIndicator
+            variant="header"
+            manualSyncBusy={cloudBusy}
+            lastManualSyncLabel={lastManualSyncLabel}
+            onManualSync={async () => {
+              setCloudBusy(true);
+              try {
+                await runManualCloudReconciliation(supabase, userId, {
+                  onPushError: (m) => reportMessage(m),
+                });
+                setLastManualSyncAt(new Date());
+              } catch (e) {
+                reportCaught("Falha ao sincronizar com a nuvem", e);
+              } finally {
+                setCloudBusy(false);
+              }
+            }}
+          />
         )}
 
         <div className="mb-4 flex flex-wrap gap-2">
@@ -575,36 +526,49 @@ export function LeadApp(props: LeadAppProps = {}) {
                   key={batch.id}
                   className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900/50"
                 >
-                  <button
-                    type="button"
-                    onClick={() => toggleBatch(batch.id)}
-                    className="flex w-full flex-wrap items-center justify-between gap-4 px-4 py-3 text-left"
-                  >
-                    <div>
-                      <div className="font-semibold text-zinc-900 dark:text-zinc-50">
-                        Lote {batch.batch_number}
+                  <div className="px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <div className="font-semibold text-zinc-900 dark:text-zinc-50">
+                          Lote {batch.batch_number}
+                        </div>
+                        <div className="text-xs text-zinc-500">
+                          Chegada: {formatIsoToBrDate(batch.arrival_date)} · Inicial:{" "}
+                          {batch.initial_total_bars} br / {batch.initial_total_weight} kg
+                        </div>
                       </div>
-                      <div className="text-xs text-zinc-500">
-                        Chegada: {formatIsoToBrDate(batch.arrival_date)} · Inicial:{" "}
-                        {batch.initial_total_bars} br / {batch.initial_total_weight} kg
+                      <div className="space-y-0.5 text-right text-sm">
+                        <div className="font-medium text-zinc-800 dark:text-zinc-200">
+                          Disponível: {formatIntPtBr(stock.available_bars)} br ·{" "}
+                          {formatKgPtBr(stock.available_weight)} kg
+                        </div>
+                        <div className="text-xs font-medium text-blue-700 dark:text-blue-400">
+                          Reservado: {formatIntPtBr(stock.reserved_bars)} br ·{" "}
+                          {formatKgPtBr(stock.reserved_weight)} kg
+                        </div>
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                          No estoque: {formatIntPtBr(stock.stock_bars)} br ·{" "}
+                          {formatKgPtBr(stock.stock_weight)} kg
+                        </div>
                       </div>
                     </div>
-                    <div className="space-y-0.5 text-right text-sm">
-                      <div className="font-medium text-zinc-800 dark:text-zinc-200">
-                        Disponível: {formatIntPtBr(stock.available_bars)} br ·{" "}
-                        {formatKgPtBr(stock.available_weight)} kg
-                      </div>
-                      <div className="text-xs font-medium text-blue-700 dark:text-blue-400">
-                        Reservado: {formatIntPtBr(stock.reserved_bars)} br ·{" "}
-                        {formatKgPtBr(stock.reserved_weight)} kg
-                      </div>
-                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                        No estoque: {formatIntPtBr(stock.stock_bars)} br ·{" "}
-                        {formatKgPtBr(stock.stock_weight)} kg
-                      </div>
-                      <div className="text-xs text-zinc-400">{open ? "Recolher" : "Expandir"}</div>
+                    <div className="mt-3 flex flex-wrap justify-end gap-4 border-t border-zinc-100 pt-2 text-xs dark:border-zinc-800">
+                      <button
+                        type="button"
+                        className="font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                        onClick={() => toggleBatch(batch.id)}
+                      >
+                        {open ? "Recolher grade" : "Expandir grade"}
+                      </button>
+                      <button
+                        type="button"
+                        className="font-medium text-emerald-800 hover:underline dark:text-emerald-400"
+                        onClick={() => setEditBatch(batch)}
+                      >
+                        Editar lote
+                      </button>
                     </div>
-                  </button>
+                  </div>
                   {open && (
                     <div className="border-t border-zinc-100 px-3 pb-4 pt-2 dark:border-zinc-800">
                       <PileGrid
@@ -634,6 +598,10 @@ export function LeadApp(props: LeadAppProps = {}) {
                         }}
                         onRequestSelectMore={() => {
                           // nada: apenas fecha o menu no grid
+                        }}
+                        onRequestEditPile={(pileId) => {
+                          const p = piles.find((x) => x.id === pileId);
+                          if (p) setEditPile(p);
                         }}
                       />
                     </div>
@@ -777,7 +745,165 @@ export function LeadApp(props: LeadAppProps = {}) {
         )}
       </div>
 
-      <SyncStatusIndicator />
+      {editBatch && (
+        <div
+          className="fixed inset-0 z-[60] flex items-end justify-center p-4 sm:items-center"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-batch-title"
+        >
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/40"
+            aria-label="Fechar"
+            onClick={() => setEditBatch(null)}
+          />
+          <div className="relative w-full max-w-md rounded-xl border border-zinc-200 bg-white p-5 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
+            <h2 id="edit-batch-title" className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
+              Editar lote
+            </h2>
+            <form
+              className="mt-4 space-y-4"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setEditSaving(true);
+                try {
+                  await updateBatchMetadata(editBatch.id, {
+                    batch_number: batchEditNum,
+                    arrival_date: batchEditArrival,
+                  });
+                  setEditBatch(null);
+                } catch (err) {
+                  reportCaught("Não foi possível salvar o lote", err);
+                } finally {
+                  setEditSaving(false);
+                }
+              }}
+            >
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Número do lote
+                <input
+                  type="text"
+                  required
+                  value={batchEditNum}
+                  onChange={(e) => setBatchEditNum(e.target.value)}
+                  className="mt-1 w-full rounded border border-zinc-300 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800"
+                />
+              </label>
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Data de chegada
+                <input
+                  type="date"
+                  required
+                  value={batchEditArrival}
+                  onChange={(e) => setBatchEditArrival(e.target.value)}
+                  className="mt-1 w-full rounded border border-zinc-300 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800"
+                />
+              </label>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditBatch(null)}
+                  className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={editSaving}
+                  className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                >
+                  {editSaving ? "Salvando…" : "Salvar"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editPile && (
+        <div
+          className="fixed inset-0 z-[60] flex items-end justify-center p-4 sm:items-center"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-pile-title"
+        >
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/40"
+            aria-label="Fechar"
+            onClick={() => setEditPile(null)}
+          />
+          <div className="relative w-full max-w-md rounded-xl border border-zinc-200 bg-white p-5 shadow-2xl dark:border-zinc-700 dark:bg-zinc-900">
+            <h2 id="edit-pile-title" className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
+              Corrigir monte ({editPile.grid_position_x + 1},{editPile.grid_position_y + 1})
+            </h2>
+            <p className="mt-1 text-xs text-zinc-500">
+              Só é permitido se o monte não tiver baixas registradas. Disponível ou reservado.
+            </p>
+            <form
+              className="mt-4 space-y-4"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setEditSaving(true);
+                try {
+                  const w = Number.parseFloat(pileKg.replace(",", "."));
+                  const b = Number.parseInt(pileBars, 10);
+                  await updatePileQuantities(editPile.id, {
+                    current_weight: w,
+                    current_bars: b,
+                  });
+                  setEditPile(null);
+                } catch (err) {
+                  reportCaught("Não foi possível salvar o monte", err);
+                } finally {
+                  setEditSaving(false);
+                }
+              }}
+            >
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Peso (kg)
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  required
+                  value={pileKg}
+                  onChange={(e) => setPileKg(e.target.value)}
+                  className="mt-1 w-full rounded border border-zinc-300 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800"
+                />
+              </label>
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Barras
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  required
+                  value={pileBars}
+                  onChange={(e) => setPileBars(e.target.value)}
+                  className="mt-1 w-full rounded border border-zinc-300 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800"
+                />
+              </label>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditPile(null)}
+                  className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={editSaving}
+                  className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                >
+                  {editSaving ? "Salvando…" : "Salvar"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       <ReleaseModal
         open={releaseOpen}

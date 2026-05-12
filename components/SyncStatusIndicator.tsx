@@ -26,8 +26,21 @@ function getServerOnlineSnapshot(): boolean {
 
 type Mode = "local_only" | "offline" | "syncing" | "pending" | "synced";
 
-/** Ícone fixo discreto: estado da nuvem / fila local. */
-export function SyncStatusIndicator() {
+type Props = {
+  /** `header`: faixa discreta no topo. `fab`: ícone fixo (legado). */
+  variant?: "header" | "fab";
+  onManualSync?: () => Promise<void>;
+  manualSyncBusy?: boolean;
+  lastManualSyncLabel?: string | null;
+};
+
+/** Estado da nuvem / fila; no header inclui um único botão de sincronização forçada. */
+export function SyncStatusIndicator({
+  variant = "fab",
+  onManualSync,
+  manualSyncBusy = false,
+  lastManualSyncLabel = null,
+}: Props) {
   const { userId, supabase } = useAuthUser();
   const isOnline = useSyncExternalStore(subscribeOnline, getOnlineSnapshot, getServerOnlineSnapshot);
   const pending = useLiveQuery(() => db.syncOutbox.count(), []) ?? 0;
@@ -59,22 +72,30 @@ export function SyncStatusIndicator() {
             ? `Fila: ${pending} pendente(s) para enviar.`
             : "Sincronizado com a nuvem.";
 
-  const base =
-    "pointer-events-auto fixed bottom-4 right-4 z-40 flex h-9 w-9 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-opacity hover:opacity-100";
-
-  const palette =
+  const statusShort =
     mode === "local_only"
-      ? "border-zinc-200/80 bg-white/70 text-zinc-400 opacity-60 dark:border-zinc-700 dark:bg-zinc-950/70 dark:text-zinc-500"
+      ? "Só local"
       : mode === "offline"
-        ? "border-amber-200/90 bg-amber-50/90 text-amber-800 opacity-80 dark:border-amber-900 dark:bg-amber-950/80 dark:text-amber-200"
+        ? `Sem rede${pending > 0 ? ` · fila ${pending}` : ""}`
         : mode === "syncing"
-          ? "border-sky-200/90 bg-sky-50/90 text-sky-700 opacity-90 dark:border-sky-800 dark:bg-sky-950/80 dark:text-sky-200"
+          ? "Sincronizando…"
           : mode === "pending"
-            ? "border-orange-200/90 bg-orange-50/90 text-orange-800 opacity-90 dark:border-orange-900 dark:bg-orange-950/80 dark:text-orange-200"
-            : "border-emerald-200/90 bg-emerald-50/90 text-emerald-800 opacity-75 dark:border-emerald-900 dark:bg-emerald-950/80 dark:text-emerald-200";
+            ? `Fila: ${pending}`
+            : "Nuvem ok";
 
-  return (
-    <div className={`${base} ${palette}`} title={title} role="status" aria-label={title}>
+  const iconPalette =
+    mode === "local_only"
+      ? "border-zinc-200/80 bg-white/90 text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950/90 dark:text-zinc-500"
+      : mode === "offline"
+        ? "border-amber-200/90 bg-amber-50/90 text-amber-800 dark:border-amber-900 dark:bg-amber-950/80 dark:text-amber-200"
+        : mode === "syncing"
+          ? "border-sky-200/90 bg-sky-50/90 text-sky-700 dark:border-sky-800 dark:bg-sky-950/80 dark:text-sky-200"
+          : mode === "pending"
+            ? "border-orange-200/90 bg-orange-50/90 text-orange-800 dark:border-orange-900 dark:bg-orange-950/80 dark:text-orange-200"
+            : "border-emerald-200/90 bg-emerald-50/90 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/80 dark:text-emerald-200";
+
+  const iconInner = (
+    <>
       {mode === "local_only" && (
         <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
           <path d="M12 2a5 5 0 015 5v3h1a2 2 0 012 2v6H4v-6a2 2 0 012-2h1V7a5 5 0 015-5z" />
@@ -111,6 +132,50 @@ export function SyncStatusIndicator() {
           <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       )}
+    </>
+  );
+
+  if (variant === "header") {
+    return (
+      <div
+        className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200/90 bg-zinc-50/80 px-3 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-900/40"
+        title={title}
+      >
+        <div
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${iconPalette}`}
+          aria-hidden
+        >
+          {iconInner}
+        </div>
+        <div className="min-w-0 flex-1 leading-snug text-zinc-600 dark:text-zinc-400">
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">{statusShort}</span>
+          <span className="mx-1.5 text-zinc-300 dark:text-zinc-600">·</span>
+          <span className="text-zinc-500 dark:text-zinc-500">{title}</span>
+          {lastManualSyncLabel ? (
+            <span className="mt-0.5 block text-[11px] text-zinc-400 dark:text-zinc-500">{lastManualSyncLabel}</span>
+          ) : null}
+        </div>
+        {onManualSync && (
+          <button
+            type="button"
+            disabled={manualSyncBusy || !cloud}
+            onClick={() => void onManualSync()}
+            className="shrink-0 rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            title="Receber da nuvem, re-enfileirar envios e drenar a fila agora."
+          >
+            {manualSyncBusy ? "Sincronizando…" : "Sincronizar"}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const base =
+    "pointer-events-auto fixed bottom-4 right-4 z-40 flex h-9 w-9 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-opacity hover:opacity-100";
+
+  return (
+    <div className={`${base} ${iconPalette} opacity-90`} title={title} role="status" aria-label={title}>
+      {iconInner}
     </div>
   );
 }
