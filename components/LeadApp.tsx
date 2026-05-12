@@ -7,7 +7,13 @@ import { computeBatchStock } from "@/lib/batchTotals";
 import { cancelReservation } from "@/lib/reservePiles";
 import type { LeadAlloy, LeadBatch, LeadPile, LeadPileEvent, LeadTransaction } from "@/lib/types";
 import { formatIntPtBr, formatKgPtBr } from "@/lib/formatPtBr";
-import { ErrorBanner } from "@/components/ErrorBanner";
+import { ErrorBanner, type AppErrorBannerEntry } from "@/components/ErrorBanner";
+import {
+  formatBannerDetail,
+  formatBannerSummary,
+  logAppError,
+  newErrorId,
+} from "@/lib/appError";
 import { PileGrid } from "@/components/PileGrid";
 import { CadastrosView } from "@/components/CadastrosView";
 import { ReleaseModal } from "@/components/ReleaseModal";
@@ -34,7 +40,7 @@ export function LeadApp(props: LeadAppProps = {}) {
   const [mounted, setMounted] = useState(false);
   const [ready, setReady] = useState(false);
   const [mainNav, setMainNav] = useState<MainNav>("estoque");
-  const [globalError, setGlobalError] = useState<string | null>(null);
+  const [appErrors, setAppErrors] = useState<AppErrorBannerEntry[]>([]);
   const [selectedAlloyId, setSelectedAlloyId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(() => new Set());
   const [selectedPileIds, setSelectedPileIds] = useState<Set<string>>(() => new Set());
@@ -46,6 +52,35 @@ export function LeadApp(props: LeadAppProps = {}) {
   const [cloudBusy, setCloudBusy] = useState(false);
 
   const { userId, supabase } = useAuthUser();
+
+  const pushErrorEntry = useCallback((summary: string, detail?: string) => {
+    const id = newErrorId();
+    setAppErrors((prev) => [...prev, { id, summary, detail }]);
+  }, []);
+
+  const reportMessage = useCallback(
+    (summary: string, detail?: string) => {
+      console.error("[LeadApp]", summary, detail ?? "");
+      pushErrorEntry(summary, detail);
+    },
+    [pushErrorEntry],
+  );
+
+  const reportCaught = useCallback(
+    (contextPtBr: string, err: unknown) => {
+      logAppError(contextPtBr, err);
+      pushErrorEntry(formatBannerSummary(contextPtBr, err), formatBannerDetail(err));
+    },
+    [pushErrorEntry],
+  );
+
+  useEffect(() => {
+    const m = syncFatalMessage?.trim();
+    if (!m) return;
+    console.error("[LeadApp] Erro de sincronização (fluxo Auth/Sync)", m);
+    pushErrorEntry(m);
+    onClearSyncFatal?.();
+  }, [syncFatalMessage, onClearSyncFatal, pushErrorEntry]);
 
   useEffect(() => {
     setMounted(true);
@@ -60,12 +95,9 @@ export function LeadApp(props: LeadAppProps = {}) {
     (async () => {
       try {
         if (cancelled) return;
-        const all = await db.leadAlloys.orderBy("name").toArray();
-        const firstId = all[0]?.id ?? null;
-        setSelectedAlloyId((prev) => prev ?? firstId);
+        await db.leadAlloys.orderBy("name").limit(1).toArray();
       } catch (e) {
-        console.error("[LeadApp] Falha ao preparar banco local:", e);
-        setGlobalError(e instanceof Error ? e.message : String(e));
+        reportCaught("Falha ao preparar o banco local (IndexedDB)", e);
       } finally {
         if (!cancelled) setReady(true);
       }
@@ -73,32 +105,11 @@ export function LeadApp(props: LeadAppProps = {}) {
     return () => {
       cancelled = true;
     };
-  }, [mounted]);
+  }, [mounted, reportCaught]);
 
   useEffect(() => {
-    if (!selectedAlloyId) return;
+    setExpandedBatchIds(new Set());
     setSelectedPileIds(new Set());
-    let cancelled = false;
-    void (async () => {
-      try {
-        const list = await db.leadBatches
-          .where("alloy_id")
-          .equals(selectedAlloyId)
-          .toArray();
-        if (cancelled || list.length === 0) return;
-        setExpandedBatchIds((prev) => {
-          const next = new Set(prev);
-          next.add(list[0].id);
-          return next;
-        });
-      } catch (e) {
-        console.error("[LeadApp] Falha ao expandir primeiro lote:", e);
-        setGlobalError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
   }, [selectedAlloyId]);
 
   const alloysRaw = useLiveQuery(() => db.leadAlloys.orderBy("name").toArray(), []);
@@ -110,7 +121,7 @@ export function LeadApp(props: LeadAppProps = {}) {
       return;
     }
     setSelectedAlloyId((prev) =>
-      prev && alloys.some((a) => a.id === prev) ? prev : alloys[0].id,
+      prev && alloys.some((a) => a.id === prev) ? prev : null,
     );
   }, [alloys]);
 
@@ -124,9 +135,44 @@ export function LeadApp(props: LeadAppProps = {}) {
 
   const batches = useMemo(() => batchesRaw ?? [], [batchesRaw]);
 
-  const pilesRaw = useLiveQuery(() => db.leadPiles.toArray(), []);
-  const transactionsRaw = useLiveQuery(() => db.leadTransactions.toArray(), []);
-  const pileEventsRaw = useLiveQuery(() => db.leadPileEvents.toArray(), []);
+  const batchIdsKey = useMemo(() => batches.map((b) => b.id).join("|"), [batches]);
+
+  const pilesRaw = useLiveQuery(
+    () => {
+      const ids = batchIdsKey.split("|").filter(Boolean);
+      if (ids.length === 0) return Promise.resolve(EMPTY_PILES);
+      return Promise.all(ids.map((id) => db.leadPiles.where("batch_id").equals(id).toArray())).then(
+        (parts) => parts.flat(),
+      );
+    },
+    [batchIdsKey],
+  );
+
+  const pileIdsInAlloyKey = useMemo(() => {
+    const list = pilesRaw ?? EMPTY_PILES;
+    return list
+      .map((p) => p.id)
+      .sort()
+      .join("|");
+  }, [pilesRaw]);
+
+  const transactionsRaw = useLiveQuery(
+    () => {
+      const pileIds = pileIdsInAlloyKey.split("|").filter(Boolean);
+      if (pileIds.length === 0) return Promise.resolve([] as LeadTransaction[]);
+      return db.leadTransactions.where("pile_id").anyOf(pileIds).toArray();
+    },
+    [pileIdsInAlloyKey],
+  );
+
+  const pileEventsRaw = useLiveQuery(
+    () => {
+      const pileIds = pileIdsInAlloyKey.split("|").filter(Boolean);
+      if (pileIds.length === 0) return Promise.resolve([] as LeadPileEvent[]);
+      return db.leadPileEvents.where("pile_id").anyOf(pileIds).toArray();
+    },
+    [pileIdsInAlloyKey],
+  );
 
   const pilesByBatch = useMemo(() => {
     const list = pilesRaw ?? EMPTY_PILES;
@@ -290,11 +336,9 @@ export function LeadApp(props: LeadAppProps = {}) {
         </header>
 
         <ErrorBanner
-          message={globalError ?? syncFatalMessage ?? null}
-          onDismiss={() => {
-            setGlobalError(null);
-            onClearSyncFatal?.();
-          }}
+          entries={appErrors}
+          onDismiss={(id) => setAppErrors((prev) => prev.filter((e) => e.id !== id))}
+          onDismissAll={() => setAppErrors([])}
         />
 
         {userId && supabase && (
@@ -308,12 +352,11 @@ export function LeadApp(props: LeadAppProps = {}) {
                 try {
                   await enqueueAllDexieRows();
                   await flushOutbox(supabase, userId, {
-                    onPushError: (m) => setGlobalError(m),
+                    onPushError: (m) => reportMessage(m),
                   });
                   window.alert("Dados locais enfileirados e enviados (confira se está online).");
                 } catch (e) {
-                  console.error("[LeadApp] upload nuvem:", e);
-                  setGlobalError(e instanceof Error ? e.message : "Falha ao enviar para a nuvem.");
+                  reportCaught("Falha ao enviar dados locais para a nuvem", e);
                 } finally {
                   setCloudBusy(false);
                 }
@@ -330,12 +373,11 @@ export function LeadApp(props: LeadAppProps = {}) {
                 try {
                   await forceFullPush(supabase, userId);
                   await flushOutbox(supabase, userId, {
-                    onPushError: (m) => setGlobalError(m),
+                    onPushError: (m) => reportMessage(m),
                   });
                   window.alert("Forçando sincronia: dados enfileirados e enviados (confira se está online).");
                 } catch (e) {
-                  console.error("[LeadApp] forçar sincronia:", e);
-                  setGlobalError(e instanceof Error ? e.message : "Falha ao forçar sincronia.");
+                  reportCaught("Falha ao forçar sincronização com a nuvem", e);
                 } finally {
                   setCloudBusy(false);
                 }
@@ -367,12 +409,11 @@ export function LeadApp(props: LeadAppProps = {}) {
                 try {
                   await forceFullSync(supabase, userId);
                   await flushOutbox(supabase, userId, {
-                    onPushError: (m) => setGlobalError(m),
+                    onPushError: (m) => reportMessage(m),
                   });
                   window.alert("Sincronização completa enfileirada e enviada (confira se está online).");
                 } catch (e) {
-                  console.error("[LeadApp] sync tudo:", e);
-                  setGlobalError(e instanceof Error ? e.message : "Falha ao sincronizar tudo.");
+                  reportCaught("Falha ao executar sincronização completa com a nuvem", e);
                 } finally {
                   setCloudBusy(false);
                 }
@@ -434,8 +475,14 @@ export function LeadApp(props: LeadAppProps = {}) {
         {mainNav === "estoque" && (
           <>
             <p className="mb-3 text-sm text-zinc-600 dark:text-zinc-400">
-              Selecione a liga abaixo para ver todos os lotes ativos e registrar baixas nos montes.
+              Toque numa liga para carregar os lotes desta liga. Expanda um lote para ver a grade de
+              montes.
             </p>
+            {alloys.length > 0 && !selectedAlloyId && (
+              <p className="mb-3 text-sm text-amber-800 dark:text-amber-200/90">
+                Nenhuma liga selecionada — escolha uma aba acima.
+              </p>
+            )}
             <nav className="mb-4 flex flex-wrap gap-2 pb-4">
               {alloys.map((a) => (
                 <button
@@ -460,7 +507,7 @@ export function LeadApp(props: LeadAppProps = {}) {
         {mainNav === "cadastros" && (
           <div className="h-full overflow-hidden">
             <CadastrosView
-              onError={(msg) => setGlobalError(msg)}
+              onError={(msg) => reportMessage(msg)}
               onGoToEstoque={(alloyId) => {
                 setMainNav("estoque");
                 if (alloyId) setSelectedAlloyId(alloyId);
@@ -565,7 +612,7 @@ export function LeadApp(props: LeadAppProps = {}) {
                         piles={piles}
                         selectedPileIds={selectedPileIds}
                         onTogglePile={onTogglePile}
-                        onMoveError={(msg) => setGlobalError(msg)}
+                        onMoveError={(msg) => reportMessage(msg)}
                         onRequestRelease={(pileIds) => {
                           setSelectedPileIds(new Set(pileIds));
                           setReleaseOpen(true);
@@ -578,10 +625,7 @@ export function LeadApp(props: LeadAppProps = {}) {
                           try {
                             await cancelReservation(pileId);
                           } catch (err) {
-                            console.error("[LeadApp] Erro ao cancelar reserva:", err);
-                            setGlobalError(
-                              err instanceof Error ? err.message : "Falha ao cancelar reserva.",
-                            );
+                            reportCaught("Falha ao cancelar reserva do monte", err);
                           }
                         }}
                         onRequestHistory={(pileId) => {
@@ -740,7 +784,7 @@ export function LeadApp(props: LeadAppProps = {}) {
         piles={selectedPiles}
         onClose={() => setReleaseOpen(false)}
         onSuccess={() => setSelectedPileIds(new Set())}
-        onError={(msg) => setGlobalError(msg)}
+        onError={(msg) => reportMessage(msg)}
       />
 
       <ReservationModal
@@ -748,7 +792,7 @@ export function LeadApp(props: LeadAppProps = {}) {
         piles={selectedPiles}
         onClose={() => setReservationOpen(false)}
         onSuccess={() => setSelectedPileIds(new Set())}
-        onError={(msg) => setGlobalError(msg)}
+        onError={(msg) => reportMessage(msg)}
       />
     </div>
   );

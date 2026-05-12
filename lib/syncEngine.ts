@@ -10,6 +10,7 @@ import type {
   LeadTransaction,
   SyncEntityTable,
 } from "@/lib/types";
+import { deleteLocalBatchCascade, deleteLocalPileCascade } from "@/lib/cascadeLocalDelete";
 import { remoteTableName, fromRemoteRow, toRemotePayload } from "@/lib/syncMapping";
 
 const ALL_ENTITY_TABLES: SyncEntityTable[] = [
@@ -28,7 +29,103 @@ const REMOTE_TO_ENTITY: Record<string, SyncEntityTable> = {
   lead_pile_events: "leadPileEvents",
 };
 
+type SupabaseLikeError = {
+  message?: string;
+  code?: string;
+  status?: number;
+};
+
 const MAX_PUSH_ATTEMPTS = 5;
+
+const TRANSIENT_PUSH_RETRIES = 4;
+const TRANSIENT_PUSH_BASE_DELAY_MS = 600;
+
+const LOG_PREFIX = "[syncEngine]";
+
+function syncLog(phase: string, message: string, extra?: Record<string, unknown>): void {
+  const ts = new Date().toISOString();
+  if (extra && Object.keys(extra).length > 0) {
+    console.log(`${LOG_PREFIX} [${ts}] [${phase}] ${message}`, extra);
+  } else {
+    console.log(`${LOG_PREFIX} [${ts}] [${phase}] ${message}`);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function readErrParts(err: unknown): { msg: string; code: string; status: number } {
+  const msg =
+    err && typeof err === "object" && "message" in err
+      ? String((err as SupabaseLikeError).message ?? "")
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  const code =
+    err && typeof err === "object" && "code" in err
+      ? String((err as SupabaseLikeError).code ?? "")
+      : "";
+  const status =
+    err && typeof err === "object" && "status" in err
+      ? Number((err as SupabaseLikeError).status)
+      : NaN;
+  return { msg, code, status };
+}
+
+/** Autenticação inválida, RLS ou negação explícita no Postgres — deve aparecer na UI de imediato. */
+export function isAuthPermissionOrRlsError(err: unknown): boolean {
+  const { msg, code, status } = readErrParts(err);
+  const lower = msg.toLowerCase();
+  return (
+    code === "42501" ||
+    status === 401 ||
+    status === 403 ||
+    lower.includes("permission denied") ||
+    lower.includes("row-level security") ||
+    lower.includes("violates row-level security") ||
+    lower.includes("rls") ||
+    lower.includes("not allowed") ||
+    lower.includes("jwt expired") ||
+    lower.includes("invalid jwt") ||
+    /^PGRST30[12]$/i.test(code)
+  );
+}
+
+function isInvalidApiKeyOrMissing(err: unknown): boolean {
+  const { msg } = readErrParts(err);
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("invalid api key") ||
+    lower.includes("missing api key") ||
+    lower.includes("no api key found")
+  );
+}
+
+function shouldSurfaceSyncFailureImmediately(err: unknown): boolean {
+  return isAuthPermissionOrRlsError(err) || isInvalidApiKeyOrMissing(err);
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  if (shouldSurfaceSyncFailureImmediately(err)) return false;
+  const { msg, code } = readErrParts(err);
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("failed to fetch") ||
+    lower.includes("fetch failed") ||
+    lower.includes("networkerror") ||
+    lower.includes("network request failed") ||
+    lower.includes("load failed") ||
+    lower.includes("enotfound") ||
+    lower.includes("econnreset") ||
+    lower.includes("econnrefused") ||
+    lower.includes("etimedout") ||
+    lower.includes("timeout") ||
+    code === "503" ||
+    code === "502" ||
+    code === "504"
+  );
+}
 
 export type SyncEngineCallbacks = {
   onPushError?: (message: string) => void;
@@ -36,12 +133,6 @@ export type SyncEngineCallbacks = {
 export type StartSyncEngineOptions = {
   /** Após o primeiro pull + flush bem-sucedidos (ex.: reconciliação Dexie × Postgres). */
   afterInitialSync?: () => Promise<void>;
-};
-
-type SupabaseLikeError = {
-  message?: string;
-  code?: string;
-  status?: number;
 };
 
 function normalizeSupabaseErrorMessage(err: unknown): string {
@@ -416,10 +507,10 @@ async function deleteLocal(table: SyncEntityTable, id: string): Promise<void> {
       await db.leadAlloys.delete(id);
       return;
     case "leadBatches":
-      await db.leadBatches.delete(id);
+      await deleteLocalBatchCascade(id);
       return;
     case "leadPiles":
-      await db.leadPiles.delete(id);
+      await deleteLocalPileCascade(id);
       return;
     case "leadTransactions":
       await db.leadTransactions.delete(id);
@@ -438,19 +529,42 @@ export async function pullAllRows(
   supabase: SupabaseClient,
   ownerId: string,
 ): Promise<void> {
+  syncLog("pull-start", "Recebimento (pull): iniciando todas as tabelas", {
+    owner_id: ownerId,
+    tables: ALL_ENTITY_TABLES,
+  });
   syncActivityEnter();
   try {
     for (const table of ALL_ENTITY_TABLES) {
       const name = remoteTableName(table);
+      syncLog("pull-table", "Recebimento: consultando tabela remota", {
+        entity_table: table,
+        remote_table: name,
+        owner_id: ownerId,
+      });
       const { data, error } = await supabase.from(name).select("*").eq("owner_id", ownerId);
       if (error) {
-        console.error("[syncEngine] pullAllRows", table, error);
-        throw new Error(normalizeSupabaseErrorMessage(error));
+        const msg = normalizeSupabaseErrorMessage(error);
+        console.error("[syncEngine] pullAllRows: Supabase retornou erro", {
+          entity_table: table,
+          remote_table: name,
+          owner_id: ownerId,
+          error,
+          mensagem_ui: msg,
+        });
+        throw new Error(msg);
       }
-      for (const raw of data ?? []) {
+      const rows = data ?? [];
+      syncLog("pull-table-ok", `Recebimento: ${rows.length} linha(s) aplicadas (merge LWW)`, {
+        entity_table: table,
+        remote_table: name,
+        row_count: rows.length,
+      });
+      for (const raw of rows) {
         await applyMerged(table, raw as Record<string, unknown>);
       }
     }
+    syncLog("pull-done", "Recebimento (pull): concluído com sucesso");
   } finally {
     syncActivityLeave();
   }
@@ -462,16 +576,33 @@ async function processOneOutboxRow(
   callbacks?: SyncEngineCallbacks,
 ): Promise<boolean> {
   const row = await db.syncOutbox.orderBy("id").first();
-  if (!row?.id) return false;
+  if (!row?.id) {
+    syncLog("outbox-drain", "Envio: fila vazia (nada a processar)");
+    return false;
+  }
+
+  const outboxId = row.id;
 
   const remoteName = remoteTableName(row.entity_table);
+  syncLog("outbox-send-start", "Envio: iniciando operação remota", {
+    outbox_id: outboxId,
+    op: row.op,
+    entity_table: row.entity_table,
+    entity_id: row.entity_id,
+    remote_table: remoteName,
+    attempt_count_fila: row.attempt_count ?? 0,
+  });
 
-  try {
+  const performRemoteOp = async (): Promise<void> => {
     if (row.op === "delete") {
       const { error } = await supabase.from(remoteName).delete().eq("id", row.entity_id);
-      if (error) throw new Error(normalizeSupabaseErrorMessage(error));
-      await db.syncOutbox.delete(row.id);
-      return true;
+      if (error) throw error;
+      syncLog("outbox-send-ok", "Envio: DELETE remoto concluído", {
+        entity_table: row.entity_table,
+        entity_id: row.entity_id,
+      });
+      await db.syncOutbox.delete(outboxId);
+      return;
     }
 
     const parsed = JSON.parse(row.payload_json) as Record<string, unknown>;
@@ -483,29 +614,92 @@ async function processOneOutboxRow(
       .select("*")
       .maybeSingle();
 
-    if (error) throw new Error(normalizeSupabaseErrorMessage(error));
+    if (error) throw error;
     if (data) {
       await applyMerged(row.entity_table, data as Record<string, unknown>);
     }
 
-    await db.syncOutbox.delete(row.id);
-    return true;
-  } catch (e) {
-    console.error("[syncEngine] push falhou:", e);
-    const msg = normalizeSupabaseErrorMessage(e);
-    const nextAttempt = (row.attempt_count ?? 0) + 1;
-    await db.syncOutbox.update(row.id, {
-      attempt_count: nextAttempt,
-      last_error: msg,
+    syncLog("outbox-send-ok", "Envio: UPSERT remoto concluído", {
+      entity_table: row.entity_table,
+      entity_id: row.entity_id,
     });
-    if (nextAttempt >= MAX_PUSH_ATTEMPTS) {
-      await db.syncOutbox.delete(row.id);
-      callbacks?.onPushError?.(
-        `Sync: falha após ${MAX_PUSH_ATTEMPTS} tentativas (${row.entity_table} ${row.entity_id}): ${msg}`,
-      );
+    await db.syncOutbox.delete(outboxId);
+  };
+
+  let lastErr: unknown = null;
+
+  for (let netTry = 0; netTry < TRANSIENT_PUSH_RETRIES; netTry++) {
+    try {
+      await performRemoteOp();
+      return true;
+    } catch (e) {
+      lastErr = e;
+      const msg = normalizeSupabaseErrorMessage(e);
+      const immediate = shouldSurfaceSyncFailureImmediately(e);
+      const transient = isTransientNetworkError(e);
+
+      console.error("[syncEngine] Envio: falha detalhada (raw)", {
+        outbox_id: outboxId,
+        op: row.op,
+        entity_table: row.entity_table,
+        entity_id: row.entity_id,
+        remote_table: remoteName,
+        network_try: netTry + 1,
+        max_network_tries: TRANSIENT_PUSH_RETRIES,
+        classificacao_imediata_ui: immediate,
+        classificacao_rede_transiente: transient,
+        mensagem_normalizada: msg,
+        erro_bruto: e,
+      });
+
+      if (immediate) {
+        syncLog("outbox-send-fatal", "Envio: falha de autenticação, chave ou RLS", {
+          entity_table: row.entity_table,
+          entity_id: row.entity_id,
+        });
+        const prevAttempts = row.attempt_count ?? 0;
+        if (prevAttempts === 0) {
+          callbacks?.onPushError?.(`Erro ao sincronizar com Supabase: ${msg}`);
+        }
+      }
+
+      if (transient && netTry < TRANSIENT_PUSH_RETRIES - 1) {
+        const delayMs = TRANSIENT_PUSH_BASE_DELAY_MS * (netTry + 1);
+        syncLog(
+          "outbox-send-retry",
+          `Envio: rede/transiente — nova tentativa em ${delayMs}ms`,
+          {
+            entity_id: row.entity_id,
+            proxima_tentativa: netTry + 2,
+          },
+        );
+        await sleep(delayMs);
+        continue;
+      }
+
+      break;
     }
-    return false;
   }
+
+  const msg = normalizeSupabaseErrorMessage(lastErr);
+  syncLog("outbox-send-fail", "Envio: falha registrada na fila (aguardando nova rodada)", {
+    entity_table: row.entity_table,
+    entity_id: row.entity_id,
+    last_error: msg,
+  });
+
+  const nextAttempt = (row.attempt_count ?? 0) + 1;
+  await db.syncOutbox.update(outboxId, {
+    attempt_count: nextAttempt,
+    last_error: msg,
+  });
+  if (nextAttempt >= MAX_PUSH_ATTEMPTS) {
+    await db.syncOutbox.delete(outboxId);
+    callbacks?.onPushError?.(
+      `Sync: falha após ${MAX_PUSH_ATTEMPTS} tentativas (${row.entity_table} ${row.entity_id}): ${msg}`,
+    );
+  }
+  return false;
 }
 
 export async function flushOutbox(
@@ -513,12 +707,25 @@ export async function flushOutbox(
   ownerId: string,
   callbacks?: SyncEngineCallbacks,
 ): Promise<void> {
+  const pendingBefore = await db.syncOutbox.count();
+  syncLog("flush-start", "Envio: dreno da outbox (flush)", {
+    owner_id: ownerId,
+    pendentes_antes: pendingBefore,
+  });
   syncActivityEnter();
+  let processed = 0;
   try {
     for (let i = 0; i < 500; i++) {
       const progressed = await processOneOutboxRow(supabase, ownerId, callbacks);
       if (!progressed) break;
+      processed += 1;
     }
+    const pendingAfter = await db.syncOutbox.count();
+    syncLog("flush-done", "Envio: dreno da outbox concluído nesta execução", {
+      owner_id: ownerId,
+      processados_nesta_rodada: processed,
+      pendentes_depois: pendingAfter,
+    });
   } finally {
     syncActivityLeave();
   }
@@ -540,6 +747,7 @@ export function startSyncEngine(
   stopSyncEngine();
 
   const onOnline = () => {
+    syncLog("browser-online", "Navegador online — disparando flushOutbox");
     void flushOutbox(supabase, ownerId, callbacks);
   };
 
@@ -559,6 +767,11 @@ export function startSyncEngine(
       (payload) => {
         void (async () => {
           try {
+            syncLog("realtime-event", "Recebimento: evento Realtime", {
+              entity_table: entityTable,
+              eventType: payload.eventType,
+              table: name,
+            });
             if (payload.eventType === "DELETE") {
               const oldRow = payload.old as Record<string, unknown> | null;
               const id = oldRow?.id as string | undefined;
@@ -568,29 +781,48 @@ export function startSyncEngine(
             const raw = (payload.new ?? payload.old) as Record<string, unknown> | null;
             if (raw && entityTable) await applyMerged(entityTable, raw);
           } catch (err) {
-            console.error("[syncEngine] realtime handler:", err);
+            console.error("[syncEngine] Recebimento: falha no handler Realtime", {
+              entity_table: entityTable,
+              table: name,
+              payload_event: payload.eventType,
+              erro: err,
+            });
           }
         })();
       },
     );
   }
 
-  channel.subscribe((status) => {
+  channel.subscribe((status, err) => {
+    syncLog("realtime-channel", `Canal Realtime: ${status}`, err ? { erro: String(err) } : {});
     if (status === "CHANNEL_ERROR") {
-      console.error("[syncEngine] canal Realtime com erro");
+      console.error("[syncEngine] Canal Realtime com erro", err ?? status);
+      callbacks?.onPushError?.(
+        "Erro no canal Supabase Realtime. Verifique sessão, rede e políticas RLS para replicação.",
+      );
+    }
+    if (status === "TIMED_OUT") {
+      console.error("[syncEngine] Canal Realtime: tempo esgotado", err);
+      callbacks?.onPushError?.(
+        "Supabase Realtime: tempo esgotado ao conectar o canal de sincronização.",
+      );
     }
   });
 
   window.addEventListener("online", onOnline);
 
   void (async () => {
+    syncLog("engine-boot", "Motor de sync: pull inicial + flush + afterInitialSync");
     try {
       await pullAllRows(supabase, ownerId);
       await flushOutbox(supabase, ownerId, callbacks);
       await options?.afterInitialSync?.();
+      syncLog("engine-boot-ok", "Motor de sync: primeira rodada concluída");
     } catch (e) {
-      console.error("[syncEngine] pull inicial:", e);
-      callbacks?.onPushError?.(e instanceof Error ? e.message : String(e));
+      const m = e instanceof Error ? e.message : String(e);
+      console.error("[syncEngine] Motor de sync: falha na primeira rodada", e);
+      syncLog("engine-boot-fail", m);
+      callbacks?.onPushError?.(`Erro ao sincronizar com Supabase na inicialização: ${m}`);
     }
   })();
 

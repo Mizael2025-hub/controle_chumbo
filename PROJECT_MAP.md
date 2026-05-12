@@ -97,13 +97,42 @@ Objetivo: um único estado convergente entre dispositivos, sem perda silenciosa 
 - **Cliente:** Dexie permanece a fonte da verdade offline; fila `sync_outbox` envia upserts/deletes via cliente anon + RLS; **Realtime** replica mudanças remotas no Dexie com merge **LWW** por `updated_at`.
 - **Primeira subida:** botão “Subir dados locais para a nuvem” enfileira todas as linhas do Dexie e drena a outbox (útil para dados já existentes no navegador antes do login).
 
+### 5.7 Sync Engine, integridade local e UI (implementação refatorada)
+Esta subseção descreve o comportamento **atual** do código (KISS/DRY), alinhado à correção arquitetural aplicada no repositório.
+
+**Motor de sync (`lib/syncEngine.ts` + `lib/syncOutbox.ts`)**
+- **Logs no console:** prefixo `[syncEngine]` / `[syncOutbox]` com fase (pull, flush, envio por linha da fila, Realtime, boot, `online`), timestamps ISO e metadados (tabela remota, `entity_id`, tentativas).
+- **Rede transitória:** reenvio com backoff antes de registrar falha na outbox (`TRANSIENT_PUSH_RETRIES` / atraso progressivo).
+- **RLS / autenticação / chave:** falhas classificadas como imediatas disparam `onPushError` na **primeira** falha da fila para a mesma tentativa (mensagem em PT-BR); `console.error` com objeto bruto e flags de classificação.
+- **Canal Realtime:** `CHANNEL_ERROR` / `TIMED_OUT` notificam o usuário via `onPushError` e registram erro no console.
+- **Outbox:** `enqueueUpsert` / `enqueueDelete` registram no console a operação e o total pendente na fila.
+
+**Integridade local sem FK no IndexedDB (`lib/cascadeLocalDelete.ts`)**
+- Ao receber DELETE remoto (ou equivalente) de **lote** (`lead_batches`), o Dexie remove em cascata: transações (`pile_id`) → eventos de pilha (`pile_id`) → pilhas (`batch_id`) → lote; em seguida remove entradas da `sync_outbox` que referenciam esses ids (evita reenvio de upserts órfãos).
+- DELETE remoto de **pilha** remove transações e eventos daquela pilha e a pilha, com a mesma limpeza de outbox.
+
+**`LeadApp` e consultas Dexie (`components/LeadApp.tsx`)**
+- **Sem auto-seleção** de liga ou expansão automática do primeiro lote (evita cadeia de `useEffect` + `useLiveQuery`).
+- **Pilhas:** apenas `leadPiles` cujos `batch_id` pertencem aos lotes da liga selecionada (`where("batch_id").equals(...)` por lote, em vez de varrer a tabela inteira).
+- **Histórico / transações / eventos:** `where("pile_id").anyOf(...)` restrito aos montes da liga atual.
+- **Grade (`PileGrid`):** continua montada somente quando o lote está expandido (clique explícito no lote).
+
+**Erros na interface (`components/ErrorBanner.tsx` + `lib/appError.ts`)**
+- Vários erros **empilhados** (lista vermelha); cada item pode ter **detalhe** técnico (stack ou JSON resumido) e botões **Fechar** / **Fechar todos**.
+- `reportCaught` / `reportMessage` no `LeadApp` sempre fazem `console.error` com contexto; mensagens de resumo em PT-BR incluem **HTTP** e **código** quando extraídos do erro.
+
+**Pendência documentada (merge LWW e relógio)**
+- A regra desejável do §5.5 permanece: **normalizar `updated_at` no servidor** para reduzir efeito de clock skew entre dispositivos; o cliente ainda faz LWW comparando ISO local × remoto até essa camada estar 100% garantida no Postgres.
+
 ## 6. Log de Execução
-- [ ] Implementar Schema no Supabase e gerar tipagens.
-- [ ] Configurar Dexie.js e lógica de sincronização (Sync Engine).
-- [ ] Criar componentes de UI Next.js (Abas de Liga, Cabeçalho de Lotes).
-- [ ] Desenvolver Componente de Grade Matricial (Suporte até 7x4 e Drag-and-Drop).
-- [ ] Implementar lógicas de Baixa Parcial/Total e cálculos de cabeçalho.
-- [ ] Integrar tratamento de erros rigoroso (Alertas visuais e Logs).
+- [x] **Etapa — Correção arquitetural (sync observável, rede/RLS na UI, cascade delete local, `LeadApp` sem auto-seleção + queries indexadas, fila de erros empilhada): concluída** (ver §5.7).
+- [x] Configurar Dexie.js e lógica de sincronização (Sync Engine + outbox + Realtime).
+- [x] Criar componentes de UI Next.js (Abas de Liga, Cabeçalho de Lotes).
+- [x] Desenvolver componente de grade matricial (suporte até 7×4 e drag-and-drop).
+- [x] Implementar lógicas de baixa parcial/total e cálculos de cabeçalho (derivados das pilhas).
+- [x] Integrar tratamento de erros rigoroso (alertas visuais empilhados + logs no console; sem `catch` vazio).
+- [ ] Implementar/validar schema Supabase completo e tipagens geradas (conforme evolução do projeto).
+- [ ] Garantir `updated_at` canônico no servidor (trigger/RPC) para merge LWW à prova de relógio do cliente (§5.5 / §5.7).
 
 ## 7. Checklist: PDF legado → schema e fluxos (validação)
 Use o PDF antigo (Anotação S-Pen) para confirmar que o digital cobre o mesmo comportamento. Marque cada item quando conferido.
