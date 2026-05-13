@@ -73,6 +73,33 @@ function PileCell({
   const reserved = pile.reserved_for != null || pile.status === "RESERVED";
   const partial = pile.status === "PARTIAL";
 
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFiredRef = useRef(false);
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const lastTapRef = useRef<number | null>(null);
+  const tapClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current != null) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const clearTapClearTimer = () => {
+    if (tapClearTimerRef.current != null) {
+      clearTimeout(tapClearTimerRef.current);
+      tapClearTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      clearLongPressTimer();
+      clearTapClearTimer();
+    };
+  }, []);
+
   const { attributes, listeners, setNodeRef } = useDraggable({
     id: `pile:${pile.id}`,
     disabled: consumed || !moveMode,
@@ -86,6 +113,11 @@ function PileCell({
       : partial
         ? "border-amber-400 bg-amber-50 dark:border-amber-600 dark:bg-amber-950/40"
         : "border-emerald-300 bg-white dark:border-emerald-800 dark:bg-zinc-950";
+
+  const openMenuFromAnchor = (el: HTMLButtonElement) => {
+    const rect = el.getBoundingClientRect();
+    onOpenMenu(pile.id, rect);
+  };
 
   return (
     <DroppableCell batchId={batchId} x={pile.grid_position_x} y={pile.grid_position_y}>
@@ -107,15 +139,51 @@ function PileCell({
           type="button"
           disabled={consumed}
           data-pile-id={pile.id}
-          onClick={(e) => {
-            // Primeiro clique: seleciona. Segundo clique (já selecionado): abre menu.
+          onPointerDown={(e) => {
+            if (consumed || moveMode) return;
+            longPressFiredRef.current = false;
+            pointerStartRef.current = { x: e.clientX, y: e.clientY };
+            clearLongPressTimer();
+            longPressTimerRef.current = setTimeout(() => {
+              longPressFiredRef.current = true;
+              longPressTimerRef.current = null;
+              openMenuFromAnchor(e.currentTarget);
+            }, 480);
+          }}
+          onPointerMove={(e) => {
+            if (consumed || moveMode || !pointerStartRef.current) return;
+            const dx = e.clientX - pointerStartRef.current.x;
+            const dy = e.clientY - pointerStartRef.current.y;
+            if (dx * dx + dy * dy > 14 * 14) {
+              clearLongPressTimer();
+            }
+          }}
+          onPointerUp={(e) => {
             if (consumed) return;
-            if (!selected) {
+            clearLongPressTimer();
+            pointerStartRef.current = null;
+            if (moveMode) return;
+            if (longPressFiredRef.current) {
+              longPressFiredRef.current = false;
+              return;
+            }
+            const now = Date.now();
+            if (lastTapRef.current != null && now - lastTapRef.current < 320) {
+              lastTapRef.current = null;
+              clearTapClearTimer();
               onTogglePile(pile.id);
               return;
             }
-            const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
-            onOpenMenu(pile.id, rect);
+            lastTapRef.current = now;
+            clearTapClearTimer();
+            tapClearTimerRef.current = setTimeout(() => {
+              lastTapRef.current = null;
+              tapClearTimerRef.current = null;
+            }, 340);
+          }}
+          onPointerCancel={() => {
+            clearLongPressTimer();
+            pointerStartRef.current = null;
           }}
           ref={setNodeRef}
           {...(moveMode && !consumed ? listeners : {})}
@@ -169,7 +237,7 @@ type Props = {
   onRequestEditPile?: (pileId: string) => void;
 };
 
-/** Grade até 7×4; seleção por clique; menu por 2º clique. */
+/** Grade até 7×4; duplo toque seleciona; toque longo abre menu. */
 export function PileGrid({
   batchId,
   piles,
@@ -185,7 +253,7 @@ export function PileGrid({
 }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: { distance: 6 },
+      activationConstraint: { distance: 10 },
     }),
   );
 
@@ -309,10 +377,11 @@ export function PileGrid({
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <p className="mb-2 text-xs text-zinc-500">
-        Toque no monte para selecionar. Toque novamente (já selecionado) para abrir opções.
+        Toque duas vezes no monte para selecionar ou desmarcar. Toque longo para abrir opções (liberar,
+        reservar…).
         {moveMode ? " Modo mover ativo: arraste o monte pelo bloco." : ""}
       </p>
-      <div className="-mx-1 overflow-x-auto overscroll-x-contain px-1 pb-1 [scrollbar-gutter:stable]">
+      <div className="-mx-1 overflow-x-auto overscroll-x-contain px-1 pb-1 [scrollbar-gutter:stable] touch-manipulation">
         <div className="grid gap-2 [grid-template-columns:repeat(7,90px)] sm:[grid-template-columns:repeat(7,minmax(0,1fr))]">
           {cells}
         </div>

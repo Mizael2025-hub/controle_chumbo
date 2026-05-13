@@ -48,6 +48,7 @@ export type RemoteLeadTransaction = {
   deducted_bars: number;
   destination: string;
   transaction_date: string;
+  release_group_id?: string | null;
   owner_id: string;
   updated_at: string;
 };
@@ -116,6 +117,7 @@ export function toRemotePayload(
         deducted_bars: r.deducted_bars,
         destination: r.destination,
         transaction_date: r.transaction_date,
+        release_group_id: r.release_group_id ?? null,
         owner_id: ownerId,
       };
     }
@@ -186,6 +188,7 @@ export function fromRemoteRow(table: SyncEntityTable, raw: Record<string, unknow
         deducted_bars: Number(r.deducted_bars),
         destination: r.destination,
         transaction_date: r.transaction_date,
+        release_group_id: r.release_group_id ?? null,
         updated_at: r.updated_at,
       };
       return local;

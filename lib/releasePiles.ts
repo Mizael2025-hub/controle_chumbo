@@ -32,6 +32,10 @@ export async function releasePiles(input: ReleasePilesInput): Promise<void> {
   }
 
   const txs: LeadTransaction[] = [];
+  const releaseGroupId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   await db.transaction("rw", db.leadPiles, db.leadTransactions, async () => {
     const piles = await db.leadPiles.bulkGet(ids);
@@ -52,6 +56,7 @@ export async function releasePiles(input: ReleasePilesInput): Promise<void> {
         deducted_bars: pile.current_bars,
         destination: r, // neste MVP, usamos destination como "para quem foi liberado"
         transaction_date: transactionDateIso,
+        release_group_id: releaseGroupId,
       };
       await db.leadTransactions.add(txRow);
       txs.push(txRow);

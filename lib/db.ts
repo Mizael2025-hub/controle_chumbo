@@ -92,6 +92,25 @@ export class LeadControlDB extends Dexie {
             r.updated_at ??= null;
           });
       });
+
+    this.version(5)
+      .stores({
+        leadAlloys: "id, name",
+        leadBatches: "id, alloy_id, batch_number",
+        leadPiles: "id, batch_id, grid_position_x, grid_position_y",
+        leadTransactions: "id, pile_id, release_group_id",
+        leadPileEvents: "id, pile_id, event_date, kind",
+        syncOutbox: "++id, entity_table, entity_id, created_at",
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table("leadTransactions")
+          .toCollection()
+          .modify((r: LeadTransaction) => {
+            r.release_group_id ??= null;
+          });
+      });
+
     const makeUuid = (): string => {
       const c = globalThis.crypto as Crypto | undefined;
       if (c && typeof (c as Crypto & { randomUUID?: () => string }).randomUUID === "function") {

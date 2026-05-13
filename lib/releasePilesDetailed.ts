@@ -11,6 +11,8 @@ export type ReleasePilesDetailedInput = {
   actions: ReleasePileAction[];
   recipient: string;
   transactionDateIso: string;
+  /** Um UUID por envio do modal; todas as linhas de transação recebem o mesmo valor. */
+  releaseGroupId: string;
 };
 
 /**
@@ -21,7 +23,10 @@ export type ReleasePilesDetailedInput = {
  * - Em total, zera e marca CONSUMED.
  */
 export async function releasePilesDetailed(input: ReleasePilesDetailedInput): Promise<void> {
-  const { actions, recipient, transactionDateIso } = input;
+  const { actions, recipient, transactionDateIso, releaseGroupId } = input;
+
+  const gid = releaseGroupId.trim();
+  if (!gid) throw new Error("Identificador do grupo de liberação inválido.");
 
   const ids = Array.from(new Set(actions.map((a) => a.pileId))).filter(Boolean);
   if (ids.length === 0) throw new Error("Selecione pelo menos um monte para liberar.");
@@ -74,6 +79,7 @@ export async function releasePilesDetailed(input: ReleasePilesDetailedInput): Pr
         deducted_bars,
         destination: r,
         transaction_date: transactionDateIso,
+        release_group_id: gid,
       };
       await db.leadTransactions.add(txRow);
       txsOut.push(txRow);

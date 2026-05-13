@@ -10,13 +10,17 @@ import { BatchEntryGrid, type DraftPile } from "@/components/BatchEntryGrid";
 
 const EMPTY_ALLOYS: LeadAlloy[] = [];
 
+export type CadastrosMode = "full" | "ligas" | "entrada";
+
 type Props = {
   onError: (message: string) => void;
   onGoToEstoque: (alloyId: string | null) => void;
+  /** Quando não é `full`, mostra só o bloco pedido (ex.: atalho da barra / sheet). */
+  mode?: CadastrosMode;
 };
 
 /** Telas de cadastro: ligas e entrada de lote (novos montes na grade). */
-export function CadastrosView({ onError, onGoToEstoque }: Props) {
+export function CadastrosView({ onError, onGoToEstoque, mode = "full" }: Props) {
   const alloysRaw = useLiveQuery(() => db.leadAlloys.orderBy("name").toArray(), []);
   const alloys = useMemo(() => alloysRaw ?? EMPTY_ALLOYS, [alloysRaw]);
 
@@ -92,8 +96,12 @@ export function CadastrosView({ onError, onGoToEstoque }: Props) {
     });
   }, [alloys]);
 
+  const showLigas = mode === "full" || mode === "ligas";
+  const showEntrada = mode === "full" || mode === "entrada";
+
   return (
     <div className="flex h-full flex-col gap-6 overflow-hidden">
+      {showLigas && (
       <section className="shrink-0 rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/50">
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
           Cadastro de ligas
@@ -145,7 +153,9 @@ export function CadastrosView({ onError, onGoToEstoque }: Props) {
           ))}
         </ul>
       </section>
+      )}
 
+      {showEntrada && (
       <section className="flex min-h-0 flex-1 flex-col rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/50">
         <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
           Nova entrada de material (lote)
@@ -156,7 +166,9 @@ export function CadastrosView({ onError, onGoToEstoque }: Props) {
         </p>
         {alloys.length === 0 ? (
           <p className="mt-4 text-sm text-amber-700 dark:text-amber-400">
-            Cadastre pelo menos uma liga acima antes de criar lotes.
+            {mode === "entrada"
+              ? "Cadastre uma liga em Cadastro de ligas (menu Cadastros ou atalho) antes de criar lotes."
+              : "Cadastre pelo menos uma liga acima antes de criar lotes."}
           </p>
         ) : (
           <form onSubmit={handleAddBatch} className="mt-4 flex min-h-0 flex-1 flex-col gap-4">
@@ -223,6 +235,7 @@ export function CadastrosView({ onError, onGoToEstoque }: Props) {
           </form>
         )}
       </section>
+      )}
     </div>
   );
 }

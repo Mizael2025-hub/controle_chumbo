@@ -5,7 +5,7 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "@/lib/db";
 import { computeBatchStock } from "@/lib/batchTotals";
 import { cancelReservation } from "@/lib/reservePiles";
-import type { LeadAlloy, LeadBatch, LeadPile, LeadPileEvent, LeadTransaction } from "@/lib/types";
+import type { LeadAlloy, LeadBatch, LeadPile, LeadTransaction } from "@/lib/types";
 import { formatIntPtBr, formatKgPtBr } from "@/lib/formatPtBr";
 import { updateBatchMetadata, updatePileQuantities } from "@/lib/inventoryEdit";
 import { ErrorBanner, type AppErrorBannerEntry } from "@/components/ErrorBanner";
@@ -23,10 +23,16 @@ import { useAuthUser } from "@/components/AuthUserContext";
 import { SyncStatusIndicator } from "@/components/SyncStatusIndicator";
 import { runManualCloudReconciliation } from "@/lib/syncEngine";
 
+import { AlloyDashboard, type AlloyDashboardRow } from "@/components/AlloyDashboard";
+import { ReleaseReportView } from "@/components/ReleaseReportView";
+import { AppBottomNav, type AppSection } from "@/components/layout/AppBottomNav";
+import { AppSidebar } from "@/components/layout/AppSidebar";
+import { QuickActionSheet } from "@/components/layout/QuickActionSheet";
+import { useDesktopLayout } from "@/hooks/useDesktopLayout";
+
 const EMPTY_PILES: LeadPile[] = [];
 const EMPTY_ALLOYS: LeadAlloy[] = [];
-
-type MainNav = "estoque" | "cadastros";
+const EMPTY_BATCHES: LeadBatch[] = [];
 
 type LeadAppProps = {
   /** Erros fatais da fila de sync (push). */
@@ -39,16 +45,18 @@ export function LeadApp(props: LeadAppProps = {}) {
   const { syncFatalMessage, onClearSyncFatal } = props;
   const [mounted, setMounted] = useState(false);
   const [ready, setReady] = useState(false);
-  const [mainNav, setMainNav] = useState<MainNav>("estoque");
+  const desktop = useDesktopLayout();
+  const [appSection, setAppSection] = useState<AppSection>("dashboard");
+  const [loteTab, setLoteTab] = useState<"ativos" | "encerrados">("ativos");
+  const [quickSheetOpen, setQuickSheetOpen] = useState(false);
+  const [reportPileId, setReportPileId] = useState<string | null>(null);
+  const [cadastroMode, setCadastroMode] = useState<"full" | "ligas" | "entrada">("full");
   const [appErrors, setAppErrors] = useState<AppErrorBannerEntry[]>([]);
   const [selectedAlloyId, setSelectedAlloyId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(() => new Set());
   const [selectedPileIds, setSelectedPileIds] = useState<Set<string>>(() => new Set());
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [reservationOpen, setReservationOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyFilter, setHistoryFilter] = useState("");
-  const [historyPileId, setHistoryPileId] = useState<string | null>(null);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [lastManualSyncAt, setLastManualSyncAt] = useState<Date | null>(null);
   const [editBatch, setEditBatch] = useState<LeadBatch | null>(null);
@@ -156,32 +164,6 @@ export function LeadApp(props: LeadAppProps = {}) {
     [batchIdsKey],
   );
 
-  const pileIdsInAlloyKey = useMemo(() => {
-    const list = pilesRaw ?? EMPTY_PILES;
-    return list
-      .map((p) => p.id)
-      .sort()
-      .join("|");
-  }, [pilesRaw]);
-
-  const transactionsRaw = useLiveQuery(
-    () => {
-      const pileIds = pileIdsInAlloyKey.split("|").filter(Boolean);
-      if (pileIds.length === 0) return Promise.resolve([] as LeadTransaction[]);
-      return db.leadTransactions.where("pile_id").anyOf(pileIds).toArray();
-    },
-    [pileIdsInAlloyKey],
-  );
-
-  const pileEventsRaw = useLiveQuery(
-    () => {
-      const pileIds = pileIdsInAlloyKey.split("|").filter(Boolean);
-      if (pileIds.length === 0) return Promise.resolve([] as LeadPileEvent[]);
-      return db.leadPileEvents.where("pile_id").anyOf(pileIds).toArray();
-    },
-    [pileIdsInAlloyKey],
-  );
-
   const pilesByBatch = useMemo(() => {
     const list = pilesRaw ?? EMPTY_PILES;
     const m = new Map<string, LeadPile[]>();
@@ -277,6 +259,40 @@ export function LeadApp(props: LeadAppProps = {}) {
     );
   }, [batchUi]);
 
+  const allBatchesRaw = useLiveQuery(() => db.leadBatches.toArray(), []);
+  const allPilesRaw = useLiveQuery(() => db.leadPiles.toArray(), []);
+
+  const alloyDashboardRows = useMemo((): AlloyDashboardRow[] => {
+    const batchList = allBatchesRaw ?? EMPTY_BATCHES;
+    const pileList = allPilesRaw ?? EMPTY_PILES;
+    return alloys.map((alloy) => {
+      const batchesFor = batchList.filter((b) => b.alloy_id === alloy.id);
+      let available_weight = 0;
+      let available_bars = 0;
+      let stock_weight = 0;
+      let stock_bars = 0;
+      for (const b of batchesFor) {
+        const ps = pileList.filter((p) => p.batch_id === b.id);
+        const st = computeBatchStock(ps);
+        available_weight += st.available_weight;
+        available_bars += st.available_bars;
+        stock_weight += st.stock_weight;
+        stock_bars += st.stock_bars;
+      }
+      return {
+        alloy,
+        available_weight,
+        available_bars,
+        stock_weight,
+        stock_bars,
+      };
+    });
+  }, [alloys, allBatchesRaw, allPilesRaw]);
+
+  const batchesVisible = useMemo(() => {
+    return batchUi.filter((x) => (loteTab === "ativos" ? !x.finished : x.finished));
+  }, [batchUi, loteTab]);
+
   useEffect(() => {
     setExpandedBatchIds((prev) => {
       if (prev.size === 0) return prev;
@@ -287,49 +303,6 @@ export function LeadApp(props: LeadAppProps = {}) {
       return prev;
     });
   }, [batchUi]);
-
-  const releaseHistory = useMemo(() => {
-    const txs = (transactionsRaw ?? []) as LeadTransaction[];
-    const events = (pileEventsRaw ?? []) as LeadPileEvent[];
-    const piles = pilesRaw ?? [];
-    const pileById = new Map(piles.map((p) => [p.id, p]));
-    const batchById = new Map(batches.map((b) => [b.id, b]));
-
-    const q = historyFilter.trim().toLowerCase();
-
-    const merged: Array<
-      | { kind: "RELEASE"; date: string; pileId: string; payload: LeadTransaction; pile?: LeadPile; batch?: LeadBatch }
-      | { kind: "RESERVATION"; date: string; pileId: string; payload: LeadPileEvent; pile?: LeadPile; batch?: LeadBatch }
-    > = [];
-
-    for (const t of txs) {
-      const pile = pileById.get(t.pile_id);
-      const batch = pile ? batchById.get(pile.batch_id) : undefined;
-      merged.push({ kind: "RELEASE", date: t.transaction_date, pileId: t.pile_id, payload: t, pile, batch });
-    }
-
-    for (const e of events) {
-      const pile = pileById.get(e.pile_id);
-      const batch = pile ? batchById.get(pile.batch_id) : undefined;
-      merged.push({ kind: "RESERVATION", date: e.event_date, pileId: e.pile_id, payload: e, pile, batch });
-    }
-
-    return merged
-      .filter((x) => (historyPileId ? x.pileId === historyPileId : true))
-      .filter(({ batch }) => (selectedAlloyId ? batch?.alloy_id === selectedAlloyId : true))
-      .filter((x) => {
-        if (!q) return true;
-        const bn = x.batch?.batch_number?.toLowerCase?.() ?? "";
-        if (x.kind === "RELEASE") {
-          const dest = x.payload.destination?.toLowerCase?.() ?? "";
-          return dest.includes(q) || bn.includes(q);
-        }
-        const rec = x.payload.recipient?.toLowerCase?.() ?? "";
-        return rec.includes(q) || bn.includes(q) || "reserva".includes(q);
-      })
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 120);
-  }, [transactionsRaw, pileEventsRaw, pilesRaw, batches, selectedAlloyId, historyFilter, historyPileId]);
 
   const onTogglePile = (pileId: string) => {
     setSelectedPileIds((prev) => {
@@ -349,401 +322,354 @@ export function LeadApp(props: LeadAppProps = {}) {
   }
 
   return (
-    <div className="mx-auto flex min-h-[100svh] max-w-6xl flex-col px-4 pb-6">
-      <div className="sticky top-0 z-30 -mx-4 border-b border-zinc-200 bg-white/90 px-4 pt-6 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
-        <header className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold text-zinc-900 dark:text-zinc-50">
-              Controle de chumbo
-            </h1>
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              Protótipo offline (Dexie). Os dados ficam armazenados neste navegador.
-            </p>
-          </div>
-          {userId && supabase && (
-            <button
-              type="button"
-              className="shrink-0 rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-              onClick={() => void supabase.auth.signOut()}
-            >
-              Sair
-            </button>
-          )}
-        </header>
-
-        <ErrorBanner
-          entries={appErrors}
-          onDismiss={(id) => setAppErrors((prev) => prev.filter((e) => e.id !== id))}
-          onDismissAll={() => setAppErrors([])}
+    <div
+      className={`flex min-h-[100svh] w-full bg-[var(--background)] text-[var(--foreground)] ${
+        desktop ? "flex-row" : "flex-col"
+      }`}
+    >
+      {desktop && (
+        <AppSidebar
+          section={appSection}
+          onNavigate={(s) => {
+            setAppSection(s);
+            if (s === "cadastros") setCadastroMode("full");
+            if (s === "relatorio") setReportPileId(null);
+          }}
+          onQuickEntrada={() => {
+            setAppSection("cadastros");
+            setCadastroMode("entrada");
+          }}
+          onQuickLigas={() => {
+            setAppSection("cadastros");
+            setCadastroMode("ligas");
+          }}
+          onQuickSaida={() => {
+            setAppSection("estoque");
+          }}
         />
+      )}
 
-        {userId && supabase && (
-          <SyncStatusIndicator
-            variant="header"
-            manualSyncBusy={cloudBusy}
-            lastManualSyncLabel={lastManualSyncLabel}
-            onManualSync={async () => {
-              setCloudBusy(true);
-              try {
-                await runManualCloudReconciliation(supabase, userId, {
-                  onPushError: (m) => reportMessage(m),
-                });
-                setLastManualSyncAt(new Date());
-              } catch (e) {
-                reportCaught("Falha ao sincronizar com a nuvem", e);
-              } finally {
-                setCloudBusy(false);
-              }
-            }}
-          />
-        )}
-
-        <div className="mb-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setMainNav("estoque")}
-            className={`rounded-lg px-4 py-2 text-sm font-semibold ${
-              mainNav === "estoque"
-                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200"
-            }`}
-          >
-            Estoque e baixas
-          </button>
-          <button
-            type="button"
-            onClick={() => setMainNav("cadastros")}
-            className={`rounded-lg px-4 py-2 text-sm font-semibold ${
-              mainNav === "cadastros"
-                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200"
-            }`}
-          >
-            Cadastros
-          </button>
-        </div>
-
-        {mainNav === "estoque" && (
-          <>
-            <p className="mb-3 text-sm text-zinc-600 dark:text-zinc-400">
-              Toque numa liga para carregar os lotes desta liga. Expanda um lote para ver a grade de
-              montes.
-            </p>
-            {alloys.length > 0 && !selectedAlloyId && (
-              <p className="mb-3 text-sm text-amber-800 dark:text-amber-200/90">
-                Nenhuma liga selecionada — escolha uma aba acima.
+      <div
+        className={`flex min-h-0 min-w-0 flex-1 flex-col ${
+          desktop ? "" : "pb-[calc(5.5rem+env(safe-area-inset-bottom))]"
+        }`}
+      >
+        <div className="ios-blur sticky top-0 z-20 border-b border-zinc-200/80 bg-[var(--background)]/90 px-4 pt-4 backdrop-blur-md dark:border-zinc-800/80">
+          <header className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+                Controle de chumbo
+              </h1>
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Offline-first (Dexie). Sincronização opcional com a nuvem.
               </p>
+            </div>
+            {userId && supabase && (
+              <button
+                type="button"
+                className="shrink-0 rounded-full border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                onClick={() => void supabase.auth.signOut()}
+              >
+                Sair
+              </button>
             )}
-            <nav className="mb-4 flex flex-wrap gap-2 pb-4">
-              {alloys.map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => setSelectedAlloyId(a.id)}
-                  className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                    selectedAlloyId === a.id
-                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                      : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-                  }`}
-                >
-                  {a.name}
-                </button>
-              ))}
-            </nav>
-          </>
-        )}
-      </div>
+          </header>
 
-      <div className="mt-6 flex-1 min-h-0">
-        {mainNav === "cadastros" && (
-          <div className="h-full overflow-hidden">
-            <CadastrosView
-              onError={(msg) => reportMessage(msg)}
-              onGoToEstoque={(alloyId) => {
-                setMainNav("estoque");
-                if (alloyId) setSelectedAlloyId(alloyId);
+          <ErrorBanner
+            entries={appErrors}
+            onDismiss={(id) => setAppErrors((prev) => prev.filter((e) => e.id !== id))}
+            onDismissAll={() => setAppErrors([])}
+          />
+
+          {userId && supabase && (
+            <SyncStatusIndicator
+              variant="header"
+              manualSyncBusy={cloudBusy}
+              lastManualSyncLabel={lastManualSyncLabel}
+              onManualSync={async () => {
+                setCloudBusy(true);
+                try {
+                  await runManualCloudReconciliation(supabase, userId, {
+                    onPushError: (m) => reportMessage(m),
+                  });
+                  setLastManualSyncAt(new Date());
+                } catch (e) {
+                  reportCaught("Falha ao sincronizar com a nuvem", e);
+                } finally {
+                  setCloudBusy(false);
+                }
               }}
             />
-          </div>
-        )}
+          )}
+        </div>
 
-        {mainNav === "estoque" && (
-          <>
-            <div className="space-y-4">
-            {alloys.length === 0 && (
-              <p className="text-sm text-zinc-500">
-                Nenhuma liga cadastrada. Use <strong>Cadastros</strong> para criar ligas e lotes.
-              </p>
-            )}
-            {batches.length === 0 && selectedAlloyId && alloys.length > 0 && (
-              <p className="text-sm text-zinc-500">Nenhum lote para esta liga.</p>
-            )}
-            {batchUi.length > 0 && (
-              <section className="rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/50">
-                <div className="flex flex-wrap items-baseline justify-between gap-1.5">
-                  <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    Total da liga (todos os lotes)
-                  </div>
-                  <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                    No estoque físico = disponível + reservado
-                  </div>
-                </div>
-                <div className="mt-2 grid grid-cols-3 gap-1.5">
-                  <div className="rounded-lg bg-emerald-50 px-2 py-1.5 dark:bg-emerald-950/30">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
-                      Disponível
-                    </div>
-                    <div className="text-[12px] font-semibold leading-tight text-emerald-900 dark:text-emerald-100">
-                      {formatIntPtBr(alloyStockTotals.available_bars)} br ·{" "}
-                      {formatKgPtBr(alloyStockTotals.available_weight)} kg
-                    </div>
-                  </div>
-                  <div className="rounded-lg bg-blue-50 px-2 py-1.5 dark:bg-blue-950/30">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
-                      Reservado
-                    </div>
-                    <div className="text-[12px] font-semibold leading-tight text-blue-900 dark:text-blue-100">
-                      {formatIntPtBr(alloyStockTotals.reserved_bars)} br ·{" "}
-                      {formatKgPtBr(alloyStockTotals.reserved_weight)} kg
-                    </div>
-                  </div>
-                  <div className="rounded-lg bg-zinc-100 px-2 py-1.5 dark:bg-zinc-800/60">
-                    <div className="text-[10px] font-semibold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
-                      Total geral estoque
-                    </div>
-                    <div className="text-[12px] font-semibold leading-tight text-zinc-900 dark:text-zinc-50">
-                      {formatIntPtBr(alloyStockTotals.stock_bars)} br ·{" "}
-                      {formatKgPtBr(alloyStockTotals.stock_weight)} kg
-                    </div>
-                  </div>
-                </div>
-              </section>
-            )}
-            {batchUi.map(({ batch, piles, stock }) => {
-              const open = expandedBatchIds.has(batch.id);
-              return (
-                <section
-                  key={batch.id}
-                  className="rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900/50"
-                >
-                  <div className="px-4 py-3">
-                    <div className="flex flex-wrap items-center justify-between gap-4">
-                      <div>
-                        <div className="font-semibold text-zinc-900 dark:text-zinc-50">
-                          Lote {batch.batch_number}
-                        </div>
-                        <div className="text-xs text-zinc-500">
-                          Chegada: {formatIsoToBrDate(batch.arrival_date)} · Inicial:{" "}
-                          {batch.initial_total_bars} br / {batch.initial_total_weight} kg
-                        </div>
-                      </div>
-                      <div className="space-y-0.5 text-right text-sm">
-                        <div className="font-medium text-zinc-800 dark:text-zinc-200">
-                          Disponível: {formatIntPtBr(stock.available_bars)} br ·{" "}
-                          {formatKgPtBr(stock.available_weight)} kg
-                        </div>
-                        <div className="text-xs font-medium text-blue-700 dark:text-blue-400">
-                          Reservado: {formatIntPtBr(stock.reserved_bars)} br ·{" "}
-                          {formatKgPtBr(stock.reserved_weight)} kg
-                        </div>
-                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                          No estoque: {formatIntPtBr(stock.stock_bars)} br ·{" "}
-                          {formatKgPtBr(stock.stock_weight)} kg
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mt-3 flex flex-wrap justify-end gap-4 border-t border-zinc-100 pt-2 text-xs dark:border-zinc-800">
-                      <button
-                        type="button"
-                        className="font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                        onClick={() => toggleBatch(batch.id)}
-                      >
-                        {open ? "Recolher grade" : "Expandir grade"}
-                      </button>
-                      <button
-                        type="button"
-                        className="font-medium text-emerald-800 hover:underline dark:text-emerald-400"
-                        onClick={() => setEditBatch(batch)}
-                      >
-                        Editar lote
-                      </button>
-                    </div>
-                  </div>
-                  {open && (
-                    <div className="border-t border-zinc-100 px-3 pb-4 pt-2 dark:border-zinc-800">
-                      <PileGrid
-                        batchId={batch.id}
-                        piles={piles}
-                        selectedPileIds={selectedPileIds}
-                        onTogglePile={onTogglePile}
-                        onMoveError={(msg) => reportMessage(msg)}
-                        onRequestRelease={(pileIds) => {
-                          setSelectedPileIds(new Set(pileIds));
-                          setReleaseOpen(true);
-                        }}
-                        onRequestReserve={(pileIds) => {
-                          setSelectedPileIds(new Set(pileIds));
-                          setReservationOpen(true);
-                        }}
-                        onRequestCancelReservation={async (pileId) => {
-                          try {
-                            await cancelReservation(pileId);
-                          } catch (err) {
-                            reportCaught("Falha ao cancelar reserva do monte", err);
-                          }
-                        }}
-                        onRequestHistory={(pileId) => {
-                          setHistoryPileId(pileId);
-                          setHistoryOpen(true);
-                        }}
-                        onRequestSelectMore={() => {
-                          // nada: apenas fecha o menu no grid
-                        }}
-                        onRequestEditPile={(pileId) => {
-                          const p = piles.find((x) => x.id === pileId);
-                          if (p) setEditPile(p);
-                        }}
-                      />
-                    </div>
-                  )}
-                </section>
-              );
-            })}
+        <main className="mx-auto flex w-full min-h-0 max-w-6xl flex-1 flex-col px-4 pb-8 pt-4">
+          {appSection === "dashboard" && (
+            <AlloyDashboard
+              rows={alloyDashboardRows}
+              selectedAlloyId={selectedAlloyId}
+              onSelectAlloy={(id) => {
+                setSelectedAlloyId(id);
+                setAppSection("estoque");
+              }}
+            />
+          )}
+
+          {appSection === "cadastros" && (
+            <div className="min-h-0 flex-1 overflow-auto">
+              <CadastrosView
+                mode={cadastroMode}
+                onError={(msg) => reportMessage(msg)}
+                onGoToEstoque={(alloyId) => {
+                  setAppSection("estoque");
+                  if (alloyId) setSelectedAlloyId(alloyId);
+                }}
+              />
             </div>
+          )}
 
-            <section className="mt-8 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900/50">
-            <button
-              type="button"
-              onClick={() => setHistoryOpen((v) => !v)}
-              className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left"
-            >
-              <div>
-                <div className="font-semibold text-zinc-900 dark:text-zinc-50">
-                  Histórico de liberações
-                </div>
-                <div className="text-xs text-zinc-500">
-                  Mostrando as últimas {releaseHistory.length} (filtra por destino ou lote).
-                </div>
+          {appSection === "relatorio" && (
+            <ReleaseReportView
+              pileIdFilter={reportPileId}
+              onClearPileFilter={() => setReportPileId(null)}
+              onError={(msg) => reportMessage(msg)}
+            />
+          )}
+
+          {appSection === "estoque" && (
+            <>
+              <p className="mb-3 text-sm text-zinc-600 dark:text-zinc-400">
+                Escolha a liga, depois o lote. Expanda para ver a grade. Toque duas vezes no monte para
+                selecionar; toque longo para opções.
+              </p>
+              {alloys.length > 0 && !selectedAlloyId && (
+                <p className="mb-3 text-sm text-amber-800 dark:text-amber-200/90">
+                  Nenhuma liga selecionada — escolha uma aba abaixo ou no Início.
+                </p>
+              )}
+              <nav className="mb-4 flex flex-wrap gap-2">
+                {alloys.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    onClick={() => setSelectedAlloyId(a.id)}
+                    className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+                      selectedAlloyId === a.id
+                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                        : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                    }`}
+                  >
+                    {a.name}
+                  </button>
+                ))}
+              </nav>
+
+              <div className="mb-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setLoteTab("ativos")}
+                  className={`rounded-full px-4 py-2 text-sm font-semibold ${
+                    loteTab === "ativos"
+                      ? "bg-[var(--ios-blue)] text-white"
+                      : "bg-zinc-200/80 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
+                  }`}
+                >
+                  Lotes ativos
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLoteTab("encerrados")}
+                  className={`rounded-full px-4 py-2 text-sm font-semibold ${
+                    loteTab === "encerrados"
+                      ? "bg-[var(--ios-blue)] text-white"
+                      : "bg-zinc-200/80 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
+                  }`}
+                >
+                  Lotes encerrados
+                </button>
               </div>
-              <div className="text-xs text-zinc-400">{historyOpen ? "Recolher" : "Expandir"}</div>
-            </button>
 
-            {historyOpen && (
-              <div className="border-t border-zinc-100 px-4 pb-4 pt-3 dark:border-zinc-800">
-                {historyPileId && (
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-100">
-                    <div>
-                      Filtrando por um monte específico.
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setHistoryPileId(null)}
-                      className="rounded-md border border-blue-300 px-2 py-1 font-semibold hover:bg-blue-100 dark:border-blue-800 dark:hover:bg-blue-900/40"
-                    >
-                      Limpar filtro do monte
-                    </button>
-                  </div>
+              <div className="space-y-4">
+                {alloys.length === 0 && (
+                  <p className="text-sm text-zinc-500">
+                    Nenhuma liga cadastrada. Use <strong>Cadastros</strong> para criar ligas e lotes.
+                  </p>
                 )}
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                  Filtrar (destino ou lote)
-                  <input
-                    type="text"
-                    value={historyFilter}
-                    onChange={(e) => setHistoryFilter(e.target.value)}
-                    placeholder="Ex.: Produção / João / LOTE-2025"
-                    className="mt-1 w-full rounded border border-zinc-300 px-3 py-2 dark:border-zinc-600 dark:bg-zinc-800"
-                  />
-                </label>
-
-                <div className="mt-3 max-h-[50vh] space-y-2 overflow-y-auto pr-1">
-                  {releaseHistory.map((item) => {
-                    const pile = item.pile;
-                    const batch = item.batch;
-                    if (item.kind === "RELEASE") {
-                      const t = item.payload;
-                      return (
-                        <div
-                          key={`tx:${t.id}`}
-                          className="rounded-lg border border-zinc-200 bg-white p-3 text-sm dark:border-zinc-700 dark:bg-zinc-950"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="font-medium text-zinc-900 dark:text-zinc-50">
-                              {formatKgPtBr(t.deducted_weight)} kg ·{" "}
-                              {formatIntPtBr(t.deducted_bars)} br
+                {batches.length === 0 && selectedAlloyId && alloys.length > 0 && (
+                  <p className="text-sm text-zinc-500">Nenhum lote para esta liga.</p>
+                )}
+                {loteTab === "encerrados" && batchesVisible.length === 0 && selectedAlloyId && (
+                  <p className="text-sm text-zinc-500">Nenhum lote encerrado nesta liga.</p>
+                )}
+                {batchUi.length > 0 && (
+                  <section className="rounded-2xl border border-zinc-200/90 bg-white px-3 py-2 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/50">
+                    <div className="flex flex-wrap items-baseline justify-between gap-1.5">
+                      <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                        Total da liga (todos os lotes)
+                      </div>
+                      <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                        No estoque físico = disponível + reservado
+                      </div>
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-1.5">
+                      <div className="rounded-xl bg-emerald-50 px-2 py-1.5 dark:bg-emerald-950/30">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                          Disponível
+                        </div>
+                        <div className="text-[12px] font-semibold leading-tight text-emerald-900 dark:text-emerald-100">
+                          {formatIntPtBr(alloyStockTotals.available_bars)} br ·{" "}
+                          {formatKgPtBr(alloyStockTotals.available_weight)} kg
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-blue-50 px-2 py-1.5 dark:bg-blue-950/30">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
+                          Reservado
+                        </div>
+                        <div className="text-[12px] font-semibold leading-tight text-blue-900 dark:text-blue-100">
+                          {formatIntPtBr(alloyStockTotals.reserved_bars)} br ·{" "}
+                          {formatKgPtBr(alloyStockTotals.reserved_weight)} kg
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-zinc-100 px-2 py-1.5 dark:bg-zinc-800/60">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
+                          Total geral estoque
+                        </div>
+                        <div className="text-[12px] font-semibold leading-tight text-zinc-900 dark:text-zinc-50">
+                          {formatIntPtBr(alloyStockTotals.stock_bars)} br ·{" "}
+                          {formatKgPtBr(alloyStockTotals.stock_weight)} kg
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                )}
+                {batchesVisible.map(({ batch, piles, stock, finished }) => {
+                  const open = expandedBatchIds.has(batch.id);
+                  return (
+                    <section
+                      key={batch.id}
+                      className={`rounded-2xl border bg-white shadow-sm dark:bg-zinc-900/50 ${
+                        finished
+                          ? "border-zinc-200/80 opacity-80 dark:border-zinc-700/80"
+                          : "border-zinc-200 dark:border-zinc-700"
+                      }`}
+                    >
+                      <div className="px-4 py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-4">
+                          <div>
+                            <div className="font-semibold text-zinc-900 dark:text-zinc-50">
+                              Lote {batch.batch_number}
+                              {finished ? (
+                                <span className="ml-2 text-xs font-normal text-zinc-500">· Encerrado</span>
+                              ) : null}
                             </div>
                             <div className="text-xs text-zinc-500">
-                              {formatIsoToBrDateTime(t.transaction_date)}
+                              Chegada: {formatIsoToBrDate(batch.arrival_date)} · Inicial:{" "}
+                              {batch.initial_total_bars} br / {batch.initial_total_weight} kg
                             </div>
                           </div>
-                          <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-                            Para: <span className="font-medium">{t.destination}</span>
-                            {batch ? (
-                              <>
-                                {" "}
-                                · Lote: <span className="font-medium">{batch.batch_number}</span>
-                              </>
-                            ) : null}
-                            {pile ? (
-                              <>
-                                {" "}
-                                · Monte:{" "}
-                                <span className="font-medium">
-                                  {pile.grid_position_x + 1},{pile.grid_position_y + 1}
-                                </span>
-                              </>
-                            ) : null}
+                          <div className="space-y-0.5 text-right text-sm">
+                            <div className="font-medium text-zinc-800 dark:text-zinc-200">
+                              Disponível: {formatIntPtBr(stock.available_bars)} br ·{" "}
+                              {formatKgPtBr(stock.available_weight)} kg
+                            </div>
+                            <div className="text-xs font-medium text-blue-700 dark:text-blue-400">
+                              Reservado: {formatIntPtBr(stock.reserved_bars)} br ·{" "}
+                              {formatKgPtBr(stock.reserved_weight)} kg
+                            </div>
+                            <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                              No estoque: {formatIntPtBr(stock.stock_bars)} br ·{" "}
+                              {formatKgPtBr(stock.stock_weight)} kg
+                            </div>
                           </div>
                         </div>
-                      );
-                    }
-
-                    const e = item.payload;
-                    const label =
-                      e.kind === "RESERVED" ? "Reserva" : "Cancelamento de reserva";
-                    return (
-                      <div
-                        key={`ev:${e.id}`}
-                        className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm dark:border-blue-900 dark:bg-blue-950/40"
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="font-medium text-blue-900 dark:text-blue-100">
-                            {label}
-                          </div>
-                          <div className="text-xs text-blue-800/80 dark:text-blue-200/80">
-                            {formatIsoToBrDateTime(e.event_date)}
-                          </div>
-                        </div>
-                        <div className="mt-1 text-xs text-blue-900/90 dark:text-blue-100/90">
-                          Para: <span className="font-medium">{e.recipient || "-"}</span>
-                          {batch ? (
-                            <>
-                              {" "}
-                              · Lote: <span className="font-medium">{batch.batch_number}</span>
-                            </>
-                          ) : null}
-                          {pile ? (
-                            <>
-                              {" "}
-                              · Monte:{" "}
-                              <span className="font-medium">
-                                {pile.grid_position_x + 1},{pile.grid_position_y + 1}
-                              </span>
-                            </>
-                          ) : null}
+                        <div className="mt-3 flex flex-wrap justify-end gap-4 border-t border-zinc-100 pt-2 text-xs dark:border-zinc-800">
+                          <button
+                            type="button"
+                            className="font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                            onClick={() => toggleBatch(batch.id)}
+                          >
+                            {open ? "Recolher grade" : "Expandir grade"}
+                          </button>
+                          <button
+                            type="button"
+                            className="font-medium text-emerald-800 hover:underline dark:text-emerald-400"
+                            onClick={() => setEditBatch(batch)}
+                          >
+                            Editar lote
+                          </button>
                         </div>
                       </div>
-                    );
-                  })}
-                  {releaseHistory.length === 0 && (
-                    <div className="text-sm text-zinc-500">Nenhum histórico encontrado.</div>
-                  )}
-                </div>
+                      {open && (
+                        <div className="border-t border-zinc-100 px-3 pb-4 pt-2 dark:border-zinc-800">
+                          <PileGrid
+                            batchId={batch.id}
+                            piles={piles}
+                            selectedPileIds={selectedPileIds}
+                            onTogglePile={onTogglePile}
+                            onMoveError={(msg) => reportMessage(msg)}
+                            onRequestRelease={(pileIds) => {
+                              setSelectedPileIds(new Set(pileIds));
+                              setReleaseOpen(true);
+                            }}
+                            onRequestReserve={(pileIds) => {
+                              setSelectedPileIds(new Set(pileIds));
+                              setReservationOpen(true);
+                            }}
+                            onRequestCancelReservation={async (pileId) => {
+                              try {
+                                await cancelReservation(pileId);
+                              } catch (err) {
+                                reportCaught("Falha ao cancelar reserva do monte", err);
+                              }
+                            }}
+                            onRequestHistory={(pileId) => {
+                              setReportPileId(pileId);
+                              setAppSection("relatorio");
+                            }}
+                            onRequestSelectMore={() => {}}
+                            onRequestEditPile={(pileId) => {
+                              const p = piles.find((x) => x.id === pileId);
+                              if (p) setEditPile(p);
+                            }}
+                          />
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
               </div>
-            )}
-          </section>
-          </>
-        )}
+            </>
+          )}
+        </main>
       </div>
+
+      {!desktop && (
+        <AppBottomNav
+          section={appSection}
+          onNavigate={(s) => {
+            setAppSection(s);
+            if (s === "cadastros") setCadastroMode("full");
+            if (s === "relatorio") setReportPileId(null);
+          }}
+          onOpenQuickActions={() => setQuickSheetOpen(true)}
+        />
+      )}
+
+      <QuickActionSheet
+        open={quickSheetOpen}
+        onClose={() => setQuickSheetOpen(false)}
+        onEntrada={() => {
+          setAppSection("cadastros");
+          setCadastroMode("entrada");
+        }}
+        onLigas={() => {
+          setAppSection("cadastros");
+          setCadastroMode("ligas");
+        }}
+        onSaida={() => {
+          setAppSection("estoque");
+        }}
+      />
 
       {editBatch && (
         <div

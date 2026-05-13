@@ -5,19 +5,35 @@
 :root {
   --background: #f4f4f5;
   --foreground: #18181b;
+  --ios-blue: #007aff;
+  --ios-radius: 16px;
+  --ios-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #09090b;
     --foreground: #fafafa;
+    --ios-blue: #0a84ff;
+    --ios-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
   }
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+}
+
+.ios-blur {
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
 }
 
 /* iOS Safari dá zoom ao focar inputs com fonte < 16px. */

@@ -43,6 +43,8 @@ export interface LeadTransaction {
   deducted_bars: number;
   destination: string;
   transaction_date: string;
+  /** UUID comum a todas as linhas criadas no mesmo envio do modal de liberação; null em dados legados. */
+  release_group_id?: string | null;
   updated_at?: string | null;
 }
 
