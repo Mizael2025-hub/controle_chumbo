@@ -1,6 +1,7 @@
 "use client";
 
 import type { LeadAlloy } from "@/lib/types";
+import { alloyCardClassName } from "@/lib/alloyColors";
 import { formatIntPtBr, formatKgPtBr } from "@/lib/formatPtBr";
 
 export type AlloyDashboardRow = {
@@ -18,15 +19,6 @@ type Props = {
 };
 
 export function AlloyDashboard({ rows, selectedAlloyId, onSelectAlloy }: Props) {
-  const pastel = [
-    "bg-amber-50/90 border-amber-200/80 dark:bg-amber-950/35 dark:border-amber-900/50",
-    "bg-rose-50/90 border-rose-200/80 dark:bg-rose-950/35 dark:border-rose-900/50",
-    "bg-sky-50/90 border-sky-200/80 dark:bg-sky-950/35 dark:border-sky-900/50",
-    "bg-violet-50/90 border-violet-200/80 dark:bg-violet-950/35 dark:border-violet-900/50",
-    "bg-teal-50/90 border-teal-200/80 dark:bg-teal-950/35 dark:border-teal-900/50",
-    "bg-orange-50/90 border-orange-200/80 dark:bg-orange-950/35 dark:border-orange-900/50",
-  ];
-
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div>
@@ -38,16 +30,16 @@ export function AlloyDashboard({ rows, selectedAlloyId, onSelectAlloy }: Props) 
         </p>
       </div>
       <div className="grid min-h-0 grid-cols-2 gap-2 sm:gap-3 md:max-h-[min(60vh,520px)] md:grid-cols-3 md:content-start">
-        {rows.slice(0, 6).map((r, i) => {
+        {rows.slice(0, 6).map((r) => {
           const active = selectedAlloyId === r.alloy.id;
           return (
             <button
               key={r.alloy.id}
               type="button"
               onClick={() => onSelectAlloy(r.alloy.id)}
-              className={`flex min-h-[100px] flex-col rounded-2xl border p-3 text-left shadow-sm transition-transform active:scale-[0.98] md:min-h-[120px] ${
-                pastel[i % pastel.length]
-              } ${active ? "ring-2 ring-[var(--ios-blue)] ring-offset-2 ring-offset-[var(--background)] dark:ring-offset-zinc-950" : ""}`}
+              className={`flex min-h-[100px] flex-col rounded-2xl border p-3 text-left shadow-sm transition-transform active:scale-[0.98] md:min-h-[120px] ${alloyCardClassName(
+                r.alloy.color_key,
+              )} ${active ? "ring-2 ring-[var(--ios-blue)] ring-offset-2 ring-offset-[var(--background)] dark:ring-offset-zinc-950" : ""}`}
             >
               <span className="line-clamp-2 text-sm font-bold leading-tight text-zinc-900 dark:text-zinc-50">
                 {r.alloy.name}

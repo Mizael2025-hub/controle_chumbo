@@ -20,6 +20,7 @@ O banco operará offline via Dexie.js com sincronização bidirecional no Supaba
 
 - `LeadAlloy` (Liga de Chumbo):
   - `id`, `name` (Ex: Liga 0, Liga 5).
+  - `color_key` (paleta fixa: azul, amarelo, vermelho, preto, cinza, sem cor, verde, branco) — cor oficial nos cards da tela Início e nas abas de Estoque.
 - `LeadBatch` (Lote):
   - `id`, `alloy_id`, `batch_number`, `arrival_date`, `initial_total_weight`, `initial_total_bars`.
   - O saldo atual de peso e barras será calculado dinamicamente com base nas pilhas ativas (ver **4.1**).

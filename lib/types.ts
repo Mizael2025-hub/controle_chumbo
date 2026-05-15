@@ -7,6 +7,8 @@ export type LeadPileEventKind = "RESERVED" | "CANCELLED_RESERVATION";
 export interface LeadAlloy {
   id: string;
   name: string;
+  /** Chave da paleta oficial (`lib/alloyColors.ts`). */
+  color_key?: string | null;
   /** ISO do servidor (sync/LWW); ausente em dados só locais antigos. */
   updated_at?: string | null;
 }

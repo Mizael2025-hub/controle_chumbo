@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "@/lib/db";
 import type { LeadAlloy } from "@/lib/types";
-import { addAlloy, deleteAlloy } from "@/lib/alloyCrud";
+import { nextDefaultColorKey, normalizeAlloyColorKey, type AlloyColorKey } from "@/lib/alloyColors";
+import { addAlloy, deleteAlloy, updateAlloyColor } from "@/lib/alloyCrud";
 import { createBatchFromGrid } from "@/lib/createBatchFromGrid";
+import { AlloyColorPicker } from "@/components/AlloyColorPicker";
 import { BatchEntryGrid, type DraftPile } from "@/components/BatchEntryGrid";
 
 const EMPTY_ALLOYS: LeadAlloy[] = [];
@@ -25,7 +27,9 @@ export function CadastrosView({ onError, onGoToEstoque, mode = "full" }: Props) 
   const alloys = useMemo(() => alloysRaw ?? EMPTY_ALLOYS, [alloysRaw]);
 
   const [newAlloyName, setNewAlloyName] = useState("");
+  const [newAlloyColor, setNewAlloyColor] = useState<AlloyColorKey>("gray");
   const [alloySubmitting, setAlloySubmitting] = useState(false);
+  const [colorUpdatingId, setColorUpdatingId] = useState<string | null>(null);
 
   const [batchAlloyId, setBatchAlloyId] = useState<string>("");
   const [batchNumber, setBatchNumber] = useState("");
@@ -37,14 +41,27 @@ export function CadastrosView({ onError, onGoToEstoque, mode = "full" }: Props) 
     e.preventDefault();
     setAlloySubmitting(true);
     try {
-      const id = await addAlloy(newAlloyName);
+      const id = await addAlloy(newAlloyName, newAlloyColor);
       setNewAlloyName("");
+      setNewAlloyColor(nextDefaultColorKey([...alloys.map((a) => a.color_key), newAlloyColor]));
       setBatchAlloyId((prev) => prev || id);
     } catch (err) {
       console.error("[CadastrosView] Erro ao cadastrar liga:", err);
       onError(err instanceof Error ? err.message : "Falha ao cadastrar liga.");
     } finally {
       setAlloySubmitting(false);
+    }
+  };
+
+  const handleColorChange = async (alloyId: string, colorKey: AlloyColorKey) => {
+    setColorUpdatingId(alloyId);
+    try {
+      await updateAlloyColor(alloyId, colorKey);
+    } catch (err) {
+      console.error("[CadastrosView] Erro ao atualizar cor da liga:", err);
+      onError(err instanceof Error ? err.message : "Falha ao atualizar cor da liga.");
+    } finally {
+      setColorUpdatingId(null);
     }
   };
 
@@ -96,6 +113,10 @@ export function CadastrosView({ onError, onGoToEstoque, mode = "full" }: Props) 
     });
   }, [alloys]);
 
+  useEffect(() => {
+    setNewAlloyColor(nextDefaultColorKey(alloys.map((a) => a.color_key)));
+  }, [alloys]);
+
   const showLigas = mode === "full" || mode === "ligas";
   const showEntrada = mode === "full" || mode === "entrada";
 
@@ -107,13 +128,20 @@ export function CadastrosView({ onError, onGoToEstoque, mode = "full" }: Props) 
           Cadastro de ligas
         </h2>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          Cada liga aparece como uma aba em &quot;Estoque e baixas&quot; para você selecionar onde
-          registrar liberações.
+          Cada liga aparece na tela Início e como aba em Estoque. Escolha a cor oficial (tons suaves).
         </p>
-        <form
-          onSubmit={handleAddAlloy}
-          className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end"
-        >
+        <form onSubmit={handleAddAlloy} className="mt-4 flex flex-col gap-4">
+          <div>
+            <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Cor da nova liga</p>
+            <div className="mt-2">
+              <AlloyColorPicker
+                value={newAlloyColor}
+                onChange={setNewAlloyColor}
+                disabled={alloySubmitting}
+              />
+            </div>
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
           <label className="block w-full flex-1 text-sm font-medium text-zinc-700 dark:text-zinc-300">
             Nome da nova liga
             <input
@@ -131,21 +159,25 @@ export function CadastrosView({ onError, onGoToEstoque, mode = "full" }: Props) 
           >
             {alloySubmitting ? "Salvando…" : "Adicionar liga"}
           </button>
+          </div>
         </form>
         <ul className="mt-6 divide-y divide-zinc-100 dark:divide-zinc-800">
           {alloys.length === 0 && (
             <li className="py-3 text-sm text-zinc-500">Nenhuma liga cadastrada ainda.</li>
           )}
           {alloys.map((a) => (
-            <li
-              key={a.id}
-              className="flex flex-wrap items-center justify-between gap-2 py-3 text-sm"
-            >
+            <li key={a.id} className="flex flex-col gap-2 py-3 text-sm sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
               <span className="font-medium text-zinc-800 dark:text-zinc-200">{a.name}</span>
+              <AlloyColorPicker
+                variant="compact"
+                value={normalizeAlloyColorKey(a.color_key)}
+                onChange={(key) => void handleColorChange(a.id, key)}
+                disabled={colorUpdatingId === a.id}
+              />
               <button
                 type="button"
                 onClick={() => handleDeleteAlloy(a.id)}
-                className="rounded border border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40"
+                className="rounded border border-red-200 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/40 sm:ml-auto"
               >
                 Excluir
               </button>

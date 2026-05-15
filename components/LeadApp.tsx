@@ -5,6 +5,7 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "@/lib/db";
 import { computeBatchStock } from "@/lib/batchTotals";
 import { cancelReservation } from "@/lib/reservePiles";
+import { alloyTabActiveClassName } from "@/lib/alloyColors";
 import type { LeadAlloy, LeadBatch, LeadPile, LeadTransaction } from "@/lib/types";
 import { formatIntPtBr, formatKgPtBr } from "@/lib/formatPtBr";
 import { updateBatchMetadata, updatePileQuantities } from "@/lib/inventoryEdit";
@@ -452,20 +453,23 @@ export function LeadApp(props: LeadAppProps = {}) {
           {appSection === "estoque" && (
             <>
               <nav className="mb-4 flex flex-wrap gap-2">
-                {alloys.map((a) => (
-                  <button
-                    key={a.id}
-                    type="button"
-                    onClick={() => setSelectedAlloyId(a.id)}
-                    className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                      selectedAlloyId === a.id
-                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                        : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-                    }`}
-                  >
-                    {a.name}
-                  </button>
-                ))}
+                {alloys.map((a) => {
+                  const selected = selectedAlloyId === a.id;
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => setSelectedAlloyId(a.id)}
+                      className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+                        selected
+                          ? alloyTabActiveClassName(a.color_key)
+                          : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                      }`}
+                    >
+                      {a.name}
+                    </button>
+                  );
+                })}
               </nav>
 
               <div className="mb-4 flex flex-wrap gap-2">

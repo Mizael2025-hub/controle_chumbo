@@ -12,6 +12,7 @@ import { SUPABASE_TABLE } from "@/lib/syncConstants";
 export type RemoteLeadAlloy = {
   id: string;
   name: string;
+  color_key?: string | null;
   owner_id: string;
   updated_at: string;
 };
@@ -78,6 +79,7 @@ export function toRemotePayload(
       return {
         id: r.id,
         name: r.name,
+        color_key: r.color_key ?? "gray",
         owner_id: ownerId,
       };
     }
@@ -146,6 +148,7 @@ export function fromRemoteRow(table: SyncEntityTable, raw: Record<string, unknow
       const local: LeadAlloy = {
         id: r.id,
         name: r.name,
+        color_key: r.color_key ?? "gray",
         updated_at: r.updated_at,
       };
       return local;
