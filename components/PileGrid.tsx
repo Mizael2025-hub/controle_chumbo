@@ -21,11 +21,13 @@ function DroppableCell({
   batchId,
   x,
   y,
+  selected,
   children,
 }: {
   batchId: string;
   x: number;
   y: number;
+  selected?: boolean;
   children: React.ReactNode;
 }) {
   const meta: CellMeta = { batchId, x, y };
@@ -36,10 +38,12 @@ function DroppableCell({
   return (
     <div
       ref={setNodeRef}
-      className={`min-h-[48px] rounded-lg border-2 border-dashed p-1 transition-colors ${
+      className={`min-h-[48px] rounded-lg border-2 p-1 transition-colors ${
         isOver
-          ? "border-blue-500 bg-blue-50/60 dark:border-blue-400 dark:bg-blue-950/40"
-          : "border-zinc-200 bg-zinc-50/50 dark:border-zinc-700 dark:bg-zinc-900/40"
+          ? "border-dashed border-blue-500 bg-blue-50/60 dark:border-blue-400 dark:bg-blue-950/40"
+          : selected
+            ? "border-solid border-sky-500 bg-sky-100/80 ring-2 ring-sky-400/50 dark:border-sky-400 dark:bg-sky-950/50"
+            : "border-dashed border-zinc-200 bg-zinc-50/50 dark:border-zinc-700 dark:bg-zinc-900/40"
       }`}
     >
       {children}
@@ -60,32 +64,16 @@ function PileCell({
   selected,
   onTogglePile,
   moveMode,
-  onOpenMenu,
 }: {
   pile: LeadPile;
   batchId: string;
   selected: boolean;
   onTogglePile: (pileId: string) => void;
   moveMode: boolean;
-  onOpenMenu: (pileId: string, anchorRect: DOMRect) => void;
 }) {
   const consumed = pile.status === "CONSUMED";
   const reserved = pile.reserved_for != null || pile.status === "RESERVED";
   const partial = pile.status === "PARTIAL";
-
-  const lastTapRef = useRef<number | null>(null);
-  const singleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearSingleTapTimer = () => {
-    if (singleTapTimerRef.current != null) {
-      clearTimeout(singleTapTimerRef.current);
-      singleTapTimerRef.current = null;
-    }
-  };
-
-  useEffect(() => {
-    return () => clearSingleTapTimer();
-  }, []);
 
   const { attributes, listeners, setNodeRef } = useDraggable({
     id: `pile:${pile.id}`,
@@ -101,14 +89,18 @@ function PileCell({
         ? "border-amber-400 bg-amber-50 dark:border-amber-600 dark:bg-amber-950/40"
         : "border-emerald-300 bg-white dark:border-emerald-800 dark:bg-zinc-950";
 
-  const openMenuFromAnchor = (el: HTMLButtonElement) => {
-    const rect = el.getBoundingClientRect();
-    onOpenMenu(pile.id, rect);
-  };
-
   return (
-    <DroppableCell batchId={batchId} x={pile.grid_position_x} y={pile.grid_position_y}>
-      <div className={`relative flex h-full min-h-[40px] flex-col rounded-md border p-2 pt-5 shadow-sm ${cardTone}`}>
+    <DroppableCell
+      batchId={batchId}
+      x={pile.grid_position_x}
+      y={pile.grid_position_y}
+      selected={selected && !consumed}
+    >
+      <div
+        className={`relative flex h-full min-h-[40px] flex-col rounded-md border p-2 pt-5 shadow-sm ${cardTone}${
+          selected && !consumed ? " ring-1 ring-sky-500/40" : ""
+        }`}
+      >
         {reserved && pile.reserved_for && (
           <span
             className="absolute left-1 top-1 max-w-[calc(100%-8px)] truncate rounded bg-blue-700/90 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-tight text-white dark:bg-blue-600/90"
@@ -126,40 +118,16 @@ function PileCell({
           type="button"
           disabled={consumed}
           data-pile-id={pile.id}
-          onPointerUp={(e) => {
+          onPointerUp={() => {
             if (consumed || moveMode) return;
-            const btn = e.currentTarget as HTMLButtonElement;
-            const now = Date.now();
-
-            if (lastTapRef.current != null && now - lastTapRef.current < 320) {
-              lastTapRef.current = null;
-              clearSingleTapTimer();
-              if (selected) {
-                openMenuFromAnchor(btn);
-              } else {
-                onTogglePile(pile.id);
-              }
-              return;
-            }
-
-            lastTapRef.current = now;
-            clearSingleTapTimer();
-            singleTapTimerRef.current = setTimeout(() => {
-              lastTapRef.current = null;
-              singleTapTimerRef.current = null;
-              onTogglePile(pile.id);
-            }, 340);
-          }}
-          onPointerCancel={() => {
-            lastTapRef.current = null;
-            clearSingleTapTimer();
+            onTogglePile(pile.id);
           }}
           ref={setNodeRef}
           {...(moveMode && !consumed ? listeners : {})}
           {...(moveMode && !consumed ? attributes : {})}
           className={`flex flex-1 flex-col text-left disabled:cursor-not-allowed ${
-            selected && !consumed ? "outline outline-2 outline-blue-500" : ""
-          } ${moveMode && !consumed ? "cursor-grab active:cursor-grabbing" : ""}`}
+            moveMode && !consumed ? "cursor-grab active:cursor-grabbing" : ""
+          }`}
         >
           <span className="w-full whitespace-nowrap overflow-hidden text-[13px] font-bold tabular-nums leading-tight sm:text-base">
             {consumed ? "0" : formatKgPtBr(pile.current_weight)}
@@ -192,6 +160,8 @@ function EmptyCell({
   );
 }
 
+type MenuOpenRequest = { pileId: string; anchorRect: DOMRect };
+
 type Props = {
   batchId: string;
   piles: LeadPile[];
@@ -204,9 +174,11 @@ type Props = {
   onRequestHistory: (pileId: string) => void;
   onRequestSelectMore: () => void;
   onRequestEditPile?: (pileId: string) => void;
+  menuOpenRequest?: MenuOpenRequest | null;
+  onMenuOpenRequestHandled?: () => void;
 };
 
-/** Grade até 7×4; toque seleciona/desseleciona; duplo toque em selecionado abre menu. */
+/** Grade até 7×4; toque seleciona/desseleciona; botão Menu abre ações. */
 export function PileGrid({
   batchId,
   piles,
@@ -219,6 +191,8 @@ export function PileGrid({
   onRequestHistory,
   onRequestSelectMore,
   onRequestEditPile,
+  menuOpenRequest,
+  onMenuOpenRequestHandled,
 }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -304,6 +278,12 @@ export function PileGrid({
   };
 
   useEffect(() => {
+    if (!menuOpenRequest) return;
+    openMenu(menuOpenRequest.pileId, menuOpenRequest.anchorRect);
+    onMenuOpenRequestHandled?.();
+  }, [menuOpenRequest, onMenuOpenRequestHandled]);
+
+  useEffect(() => {
     if (!menuPileId || !menuAnchor) return;
     // 1) calcula no próximo frame (quando o menu já tem tamanho real)
     const raf = window.requestAnimationFrame(recomputeMenuPos);
@@ -334,7 +314,6 @@ export function PileGrid({
             selected={selectedPileIds.has(pile.id)}
             onTogglePile={onTogglePile}
             moveMode={moveMode}
-            onOpenMenu={openMenu}
           />,
         );
       } else {
@@ -346,8 +325,7 @@ export function PileGrid({
   return (
     <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
       <p className="mb-2 text-xs text-zinc-500">
-        Toque no monte para selecionar ou desmarcar. Com o monte selecionado, toque duas vezes rápido para
-        abrir opções (liberar, reservar…).
+        Toque no monte para selecionar ou desmarcar. Use Menu para liberar, reservar e outras ações.
         {moveMode ? " Modo mover ativo: arraste o monte pelo bloco." : ""}
       </p>
       <div className="-mx-1 overflow-x-auto overscroll-x-contain px-1 pb-1 [scrollbar-gutter:stable] touch-manipulation">

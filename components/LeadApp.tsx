@@ -55,6 +55,11 @@ export function LeadApp(props: LeadAppProps = {}) {
   const [selectedAlloyId, setSelectedAlloyId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(() => new Set());
   const [selectedPileIds, setSelectedPileIds] = useState<Set<string>>(() => new Set());
+  const [pileMenuRequest, setPileMenuRequest] = useState<{
+    batchId: string;
+    pileId: string;
+    anchorRect: DOMRect;
+  } | null>(null);
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [reservationOpen, setReservationOpen] = useState(false);
   const [cloudBusy, setCloudBusy] = useState(false);
@@ -177,6 +182,8 @@ export function LeadApp(props: LeadAppProps = {}) {
   }, [pilesRaw]);
 
   const toggleBatch = useCallback((id: string) => {
+    setSelectedPileIds(new Set());
+    setPileMenuRequest(null);
     setExpandedBatchIds((prev) => {
       if (prev.has(id)) return new Set();
       return new Set([id]);
@@ -300,14 +307,22 @@ export function LeadApp(props: LeadAppProps = {}) {
     });
   }, [batchUi]);
 
-  const onTogglePile = (pileId: string) => {
-    setSelectedPileIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(pileId)) next.delete(pileId);
-      else next.add(pileId);
-      return next;
-    });
-  };
+  const onTogglePile = useCallback(
+    (pileId: string) => {
+      const pile = pilesRaw?.find((p) => p.id === pileId);
+      if (!pile) return;
+      const expandedId =
+        expandedBatchIds.size > 0 ? Array.from(expandedBatchIds)[0] : null;
+      if (expandedId && pile.batch_id !== expandedId) return;
+      setSelectedPileIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(pileId)) next.delete(pileId);
+        else next.add(pileId);
+        return next;
+      });
+    },
+    [pilesRaw, expandedBatchIds],
+  );
 
   if (!mounted || !ready) {
     return (
@@ -575,7 +590,7 @@ export function LeadApp(props: LeadAppProps = {}) {
                               {formatKgPtBr(stock.stock_weight)} kg
                             </span>
                           </div>
-                          <div className="mb-2 flex justify-end">
+                          <div className="mb-2 flex justify-end gap-3">
                             <button
                               type="button"
                               className="text-xs font-medium text-emerald-800 hover:underline dark:text-emerald-400"
@@ -583,12 +598,38 @@ export function LeadApp(props: LeadAppProps = {}) {
                             >
                               Editar lote
                             </button>
+                            {piles.some((p) => selectedPileIds.has(p.id)) ? (
+                              <button
+                                type="button"
+                                className="rounded-lg border border-zinc-300 bg-white px-3 py-1 text-xs font-semibold text-zinc-800 shadow-sm hover:bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
+                                onClick={(e) => {
+                                  const first = piles.find((p) => selectedPileIds.has(p.id));
+                                  if (!first) return;
+                                  setPileMenuRequest({
+                                    batchId: batch.id,
+                                    pileId: first.id,
+                                    anchorRect: e.currentTarget.getBoundingClientRect(),
+                                  });
+                                }}
+                              >
+                                Menu
+                              </button>
+                            ) : null}
                           </div>
                           <PileGrid
                             batchId={batch.id}
                             piles={piles}
                             selectedPileIds={selectedPileIds}
                             onTogglePile={onTogglePile}
+                            menuOpenRequest={
+                              pileMenuRequest?.batchId === batch.id
+                                ? {
+                                    pileId: pileMenuRequest.pileId,
+                                    anchorRect: pileMenuRequest.anchorRect,
+                                  }
+                                : null
+                            }
+                            onMenuOpenRequestHandled={() => setPileMenuRequest(null)}
                             onMoveError={(msg) => reportMessage(msg)}
                             onRequestRelease={(pileIds) => {
                               setSelectedPileIds(new Set(pileIds));
