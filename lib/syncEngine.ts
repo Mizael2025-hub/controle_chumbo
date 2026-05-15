@@ -107,8 +107,37 @@ function shouldSurfaceSyncFailureImmediately(err: unknown): boolean {
   return isAuthPermissionOrRlsError(err) || isInvalidApiKeyOrMissing(err);
 }
 
-function isTransientNetworkError(err: unknown): boolean {
+/** Aborta sincronização sem propagar para ErrorBanner / onPushError. */
+export class SyncNetworkAbortError extends Error {
+  constructor(message = "Rede indisponível") {
+    super(message);
+    this.name = "SyncNetworkAbortError";
+  }
+}
+
+/** Erro de rede ou indisponibilidade transitória — não deve gerar alerta global. */
+export function isNetworkError(err: unknown): boolean {
+  if (err instanceof SyncNetworkAbortError) return true;
   if (shouldSurfaceSyncFailureImmediately(err)) return false;
+
+  if (err instanceof TypeError) {
+    const lower = err.message.toLowerCase();
+    if (
+      lower.includes("failed to fetch") ||
+      lower.includes("fetch failed") ||
+      lower.includes("network") ||
+      lower.includes("load failed")
+    ) {
+      return true;
+    }
+  }
+
+  if (err instanceof Error && err.name === "NetworkError") return true;
+
+  if (typeof DOMException !== "undefined" && err instanceof DOMException && err.name === "NetworkError") {
+    return true;
+  }
+
   const { msg, code } = readErrParts(err);
   const lower = msg.toLowerCase();
   return (
@@ -126,6 +155,20 @@ function isTransientNetworkError(err: unknown): boolean {
     code === "502" ||
     code === "504"
   );
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  return isNetworkError(err);
+}
+
+function browserAppearsOffline(): boolean {
+  return typeof navigator !== "undefined" && !navigator.onLine;
+}
+
+function throwIfNetworkOrSupabaseError(err: unknown): void {
+  if (!err) return;
+  if (isNetworkError(err)) throw new SyncNetworkAbortError(readErrParts(err).msg || "Rede indisponível");
+  throw new Error(normalizeSupabaseErrorMessage(err));
 }
 
 export type SyncEngineCallbacks = {
@@ -222,7 +265,7 @@ export async function forceFullSync(
       .eq("id", id)
       .eq("owner_id", ownerId)
       .maybeSingle();
-    if (error) throw new Error(normalizeSupabaseErrorMessage(error));
+    if (error) throwIfNetworkOrSupabaseError(error);
     return !data?.id;
   };
 
@@ -530,6 +573,10 @@ export async function pullAllRows(
   supabase: SupabaseClient,
   ownerId: string,
 ): Promise<void> {
+  if (browserAppearsOffline()) {
+    syncLog("pull-skip-offline", "Recebimento (pull): navegador offline — abortado");
+    return;
+  }
   syncLog("pull-start", "Recebimento (pull): iniciando todas as tabelas", {
     owner_id: ownerId,
     tables: ALL_ENTITY_TABLES,
@@ -543,17 +590,20 @@ export async function pullAllRows(
         remote_table: name,
         owner_id: ownerId,
       });
-      const { data, error } = await supabase.from(name).select("*").eq("owner_id", ownerId);
-      if (error) {
-        const msg = normalizeSupabaseErrorMessage(error);
-        console.error("[syncEngine] pullAllRows: Supabase retornou erro", {
-          entity_table: table,
-          remote_table: name,
-          owner_id: ownerId,
-          error,
-          mensagem_ui: msg,
-        });
-        throw new Error(msg);
+      let data: Record<string, unknown>[] | null;
+      try {
+        const res = await supabase.from(name).select("*").eq("owner_id", ownerId);
+        if (res.error) throwIfNetworkOrSupabaseError(res.error);
+        data = res.data;
+      } catch (e) {
+        if (isNetworkError(e)) {
+          syncLog("pull-abort-net", "Recebimento (pull): rede — abortado silenciosamente", {
+            entity_table: table,
+            remote_table: name,
+          });
+          return;
+        }
+        throw e;
       }
       const rows = data ?? [];
       syncLog("pull-table-ok", `Recebimento: ${rows.length} linha(s) aplicadas (merge LWW)`, {
@@ -724,10 +774,34 @@ export async function runManualCloudReconciliation(
   ownerId: string,
   callbacks?: SyncEngineCallbacks,
 ): Promise<void> {
-  await pullAllRows(supabase, ownerId);
-  await forceFullPush(supabase, ownerId);
-  await flushOutbox(supabase, ownerId, callbacks);
-  await flushOutbox(supabase, ownerId, callbacks);
+  if (browserAppearsOffline()) {
+    syncLog("manual-sync-skip-offline", "Reconciliação manual: navegador offline — abortada");
+    return;
+  }
+  try {
+    await pullAllRows(supabase, ownerId);
+    await forceFullPush(supabase, ownerId);
+    await flushOutbox(supabase, ownerId, callbacks);
+    await flushOutbox(supabase, ownerId, callbacks);
+  } catch (e) {
+    if (isNetworkError(e)) {
+      syncLog("manual-sync-abort-net", "Reconciliação manual: rede — abortada silenciosamente");
+      return;
+    }
+    throw e;
+  }
+}
+
+/** Zera tentativas da fila ao voltar online (reconexão). */
+export async function resetOutboxForReconnect(): Promise<void> {
+  try {
+    await db.syncOutbox.toCollection().modify((r) => {
+      r.attempt_count = 0;
+      r.last_error = null;
+    });
+  } catch (e) {
+    console.error("[syncEngine] reset outbox ao voltar online", e);
+  }
 }
 
 export async function flushOutbox(
@@ -735,6 +809,10 @@ export async function flushOutbox(
   ownerId: string,
   callbacks?: SyncEngineCallbacks,
 ): Promise<void> {
+  if (browserAppearsOffline()) {
+    syncLog("flush-skip-offline", "Envio: navegador offline — dreno abortado");
+    return;
+  }
   const pendingBefore = await db.syncOutbox.count();
   syncLog("flush-start", "Envio: dreno da outbox (flush)", {
     owner_id: ownerId,
@@ -774,21 +852,6 @@ export function startSyncEngine(
   options?: StartSyncEngineOptions,
 ): void {
   stopSyncEngine();
-
-  const onOnline = () => {
-    syncLog("browser-online", "Navegador online — reset da fila + flushOutbox");
-    void (async () => {
-      try {
-        await db.syncOutbox.toCollection().modify((r) => {
-          r.attempt_count = 0;
-          r.last_error = null;
-        });
-      } catch (e) {
-        console.error("[syncEngine] reset outbox ao voltar online", e);
-      }
-      await flushOutbox(supabase, ownerId, callbacks);
-    })();
-  };
 
   setOutboxFlushRunner(() => {
     void flushOutbox(supabase, ownerId, callbacks);
@@ -839,20 +902,26 @@ export function startSyncEngine(
   channel.subscribe((status, err) => {
     syncLog("realtime-channel", `Canal Realtime: ${status}`, err ? { erro: String(err) } : {});
     if (status === "CHANNEL_ERROR") {
+      if (isNetworkError(err) || browserAppearsOffline()) {
+        syncLog("realtime-channel-net", "Canal Realtime: erro de rede — sem alerta global");
+        return;
+      }
       console.error("[syncEngine] Canal Realtime com erro", err ?? status);
       callbacks?.onPushError?.(
         "Erro no canal Supabase Realtime. Verifique sessão, rede e políticas RLS para replicação.",
       );
     }
     if (status === "TIMED_OUT") {
+      if (isNetworkError(err) || browserAppearsOffline()) {
+        syncLog("realtime-channel-net", "Canal Realtime: timeout de rede — sem alerta global");
+        return;
+      }
       console.error("[syncEngine] Canal Realtime: tempo esgotado", err);
       callbacks?.onPushError?.(
         "Supabase Realtime: tempo esgotado ao conectar o canal de sincronização.",
       );
     }
   });
-
-  window.addEventListener("online", onOnline);
 
   void (async () => {
     syncLog("engine-boot", "Motor de sync: pull inicial + flush + afterInitialSync");
@@ -862,6 +931,10 @@ export function startSyncEngine(
       await options?.afterInitialSync?.();
       syncLog("engine-boot-ok", "Motor de sync: primeira rodada concluída");
     } catch (e) {
+      if (isNetworkError(e)) {
+        syncLog("engine-boot-net", "Motor de sync: rede na inicialização — sem alerta global");
+        return;
+      }
       const m = e instanceof Error ? e.message : String(e);
       console.error("[syncEngine] Motor de sync: falha na primeira rodada", e);
       syncLog("engine-boot-fail", m);
@@ -870,7 +943,6 @@ export function startSyncEngine(
   })();
 
   cleanupFn = () => {
-    window.removeEventListener("online", onOnline);
     void supabase.removeChannel(channel);
   };
 }

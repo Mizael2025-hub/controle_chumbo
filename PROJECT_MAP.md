@@ -101,11 +101,13 @@ Objetivo: um único estado convergente entre dispositivos, sem perda silenciosa 
 Esta subseção descreve o comportamento **atual** do código (KISS/DRY), alinhado à correção arquitetural aplicada no repositório.
 
 **Motor de sync (`lib/syncEngine.ts` + `lib/syncOutbox.ts`)**
-- **Logs no console:** prefixo `[syncEngine]` / `[syncOutbox]` com fase (pull, flush, envio por linha da fila, Realtime, boot, `online`), timestamps ISO e metadados (tabela remota, `entity_id`, tentativas).
-- **Rede transitória:** reenvio com backoff antes de registrar falha na outbox (`TRANSIENT_PUSH_RETRIES` / atraso progressivo).
+- **Logs no console:** prefixo `[syncEngine]` / `[syncOutbox]` com fase (pull, flush, envio por linha da fila, Realtime, boot), timestamps ISO e metadados (tabela remota, `entity_id`, tentativas).
+- **Rede transitória:** reenvio com backoff antes de registrar falha na outbox (`TRANSIENT_PUSH_RETRIES` / atraso progressivo). Falhas classificadas por `isNetworkError` (ex.: `TypeError: Failed to fetch`, `NetworkError`, timeouts, 502/503/504) **não** disparam `onPushError` nem ErrorBanner: o pull/flush/reconciliação manual abortam silenciosamente e os itens permanecem na fila Dexie para a próxima tentativa.
+- **Offline no navegador:** `navigator.onLine === false` impede pull/flush imediatos (log `*-skip-offline`).
+- **Reconexão (`components/SyncProvider.tsx`):** listeners `online` / `offline` — em `offline` o estado de conexão fica falso; em `online` limpa erros residuais de sync na UI (`onSyncRecovered` → `syncFatal`), chama `resetOutboxForReconnect` e `flushOutbox` na hora.
 - **RLS / autenticação / chave:** falhas classificadas como imediatas disparam `onPushError` na **primeira** falha da fila para a mesma tentativa (mensagem em PT-BR); `console.error` com objeto bruto e flags de classificação.
-- **Canal Realtime:** `CHANNEL_ERROR` / `TIMED_OUT` notificam o usuário via `onPushError` e registram erro no console.
-- **Outbox:** `enqueueUpsert` / `enqueueDelete` registram no console a operação e o total pendente na fila.
+- **Canal Realtime:** `CHANNEL_ERROR` / `TIMED_OUT` por rede/offline são silenciosos; demais causas notificam via `onPushError`.
+- **Outbox:** `enqueueUpsert` / `enqueueDelete` registram no console a operação e o total pendente na fila; o dreno efetivo ao Supabase ocorre no `syncEngine` (a outbox só enfileira localmente).
 
 **Integridade local sem FK no IndexedDB (`lib/cascadeLocalDelete.ts`)**
 - Ao receber DELETE remoto (ou equivalente) de **lote** (`lead_batches`), o Dexie remove em cascata: transações (`pile_id`) → eventos de pilha (`pile_id`) → pilhas (`batch_id`) → lote; em seguida remove entradas da `sync_outbox` que referenciam esses ids (evita reenvio de upserts órfãos).
@@ -125,6 +127,7 @@ Esta subseção descreve o comportamento **atual** do código (KISS/DRY), alinha
 - A regra desejável do §5.5 permanece: **normalizar `updated_at` no servidor** para reduzir efeito de clock skew entre dispositivos; o cliente ainda faz LWW comparando ISO local × remoto até essa camada estar 100% garantida no Postgres.
 
 ## 6. Log de Execução
+- [x] **Contingência de rede (erros de fetch silenciosos, fila Dexie preservada, gatilho automático ao `online` no `SyncProvider`): concluída** (ver §5.7).
 - [x] **Etapa — Correção arquitetural (sync observável, rede/RLS na UI, cascade delete local, `LeadApp` sem auto-seleção + queries indexadas, fila de erros empilhada): concluída** (ver §5.7).
 - [x] Configurar Dexie.js e lógica de sincronização (Sync Engine + outbox + Realtime).
 - [x] Criar componentes de UI Next.js (Abas de Liga, Cabeçalho de Lotes).

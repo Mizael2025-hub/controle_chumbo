@@ -9,10 +9,11 @@ import { SyncProvider } from "@/components/SyncProvider";
 type Props = {
   children: React.ReactNode;
   onSyncError?: (message: string) => void;
+  onSyncRecovered?: () => void;
 };
 
 /** Login por e-mail/senha (usuário criado no painel Supabase). Sem nuvem configurada, o app roda só local. */
-export function AuthGate({ children, onSyncError }: Props) {
+export function AuthGate({ children, onSyncError, onSyncRecovered }: Props) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -78,7 +79,12 @@ export function AuthGate({ children, onSyncError }: Props) {
 
   return (
     <AuthUserContext.Provider value={ctxValue}>
-      <SyncProvider supabase={supabase} userId={session.user.id} onSyncError={onSyncError}>
+      <SyncProvider
+        supabase={supabase}
+        userId={session.user.id}
+        onSyncError={onSyncError}
+        onSyncRecovered={onSyncRecovered}
+      >
         {children}
       </SyncProvider>
     </AuthUserContext.Provider>

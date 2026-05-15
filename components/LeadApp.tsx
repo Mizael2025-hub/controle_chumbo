@@ -21,7 +21,7 @@ import { ReleaseModal } from "@/components/ReleaseModal";
 import { ReservationModal } from "@/components/ReservationModal";
 import { useAuthUser } from "@/components/AuthUserContext";
 import { CloudSyncButton } from "@/components/CloudSyncButton";
-import { runManualCloudReconciliation } from "@/lib/syncEngine";
+import { isNetworkError, runManualCloudReconciliation } from "@/lib/syncEngine";
 
 import { AlloyDashboard, type AlloyDashboardRow } from "@/components/AlloyDashboard";
 import { ReleaseReportView } from "@/components/ReleaseReportView";
@@ -386,6 +386,7 @@ export function LeadApp(props: LeadAppProps = {}) {
                       });
                       setSyncFailed(false);
                     } catch (e) {
+                      if (isNetworkError(e)) return;
                       setSyncFailed(true);
                       reportCaught("Falha ao sincronizar com a nuvem", e);
                     } finally {

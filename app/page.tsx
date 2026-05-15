@@ -9,7 +9,7 @@ export default function Home() {
   const clearSyncFatal = useCallback(() => setSyncFatal(null), []);
 
   return (
-    <AuthGate onSyncError={(msg) => setSyncFatal(msg)}>
+    <AuthGate onSyncError={(msg) => setSyncFatal(msg)} onSyncRecovered={clearSyncFatal}>
       <LeadApp syncFatalMessage={syncFatal} onClearSyncFatal={clearSyncFatal} />
     </AuthGate>
   );
