@@ -119,7 +119,9 @@ export function AppBottomNav({ section, onNavigate, onOpenQuickActions }: Props)
           </button>
           <span className="mt-1 text-[10px] font-medium text-zinc-500">Novo</span>
         </div>
-        {item("cadastros", "Cadastros", <NavIconDoc active={section === "cadastros"} />)}
+        <div className="flex flex-1 flex-col items-center gap-0.5 py-2" aria-hidden>
+          <span className="h-[22px] w-[22px]" />
+        </div>
         {item("relatorio", "Relatório", <NavIconChart active={section === "relatorio"} />)}
       </div>
     </nav>

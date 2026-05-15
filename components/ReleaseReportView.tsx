@@ -37,6 +37,7 @@ function formatIsoToBrDate(isoDate: string): string {
 
 export function ReleaseReportView({ pileIdFilter, onClearPileFilter, onError }: Props) {
   const [kind, setKind] = useState<ReportFilter>("saidas");
+  const [alloyFilterId, setAlloyFilterId] = useState<string>("");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -64,16 +65,22 @@ export function ReleaseReportView({ pileIdFilter, onClearPileFilter, onError }: 
     if (pileIdFilter) {
       list = list.filter((t) => t.pile_id === pileIdFilter);
     }
+    if (alloyFilterId) {
+      list = list.filter((t) => {
+        const pile = pileById.get(t.pile_id);
+        const batch = pile ? batchById.get(pile.batch_id) : undefined;
+        return batch?.alloy_id === alloyFilterId;
+      });
+    }
     if (!q) return list;
     return list.filter((t) => {
       const dest = t.destination.toLowerCase();
       const pile = pileById.get(t.pile_id);
       const batch = pile ? batchById.get(pile.batch_id) : undefined;
       const bn = batch?.batch_number?.toLowerCase() ?? "";
-      const an = batch ? alloyById.get(batch.alloy_id)?.name?.toLowerCase() ?? "" : "";
-      return dest.includes(q) || bn.includes(q) || an.includes(q);
+      return dest.includes(q) || bn.includes(q);
     });
-  }, [txs, pileIdFilter, q, pileById, batchById, alloyById]);
+  }, [txs, pileIdFilter, alloyFilterId, q, pileById, batchById]);
 
   const groups = useMemo(() => groupReleaseTransactions(filteredTxs), [filteredTxs]);
 
@@ -84,20 +91,26 @@ export function ReleaseReportView({ pileIdFilter, onClearPileFilter, onError }: 
     }));
     rows.sort((a, b) => b.batch.arrival_date.localeCompare(a.batch.arrival_date));
     let out = rows;
+    if (alloyFilterId) {
+      out = out.filter(({ batch }) => batch.alloy_id === alloyFilterId);
+    }
     if (q) {
-      out = out.filter(({ batch, alloy }) => {
-        const bn = batch.batch_number.toLowerCase();
-        const an = alloy?.name?.toLowerCase() ?? "";
-        return bn.includes(q) || an.includes(q);
-      });
+      out = out.filter(({ batch }) => batch.batch_number.toLowerCase().includes(q));
     }
     return out;
-  }, [batches, alloyById, q]);
+  }, [batches, alloyById, alloyFilterId, q]);
 
   const reservationEvents = useMemo(() => {
     if (kind !== "saidas" && kind !== "todos") return [];
     let ev = events;
     if (pileIdFilter) ev = ev.filter((e) => e.pile_id === pileIdFilter);
+    if (alloyFilterId) {
+      ev = ev.filter((e) => {
+        const pile = pileById.get(e.pile_id);
+        const batch = pile ? batchById.get(pile.batch_id) : undefined;
+        return batch?.alloy_id === alloyFilterId;
+      });
+    }
     if (!q) return ev.sort((a, b) => b.event_date.localeCompare(a.event_date)).slice(0, 80);
     return ev
       .filter((e) => {
@@ -109,7 +122,7 @@ export function ReleaseReportView({ pileIdFilter, onClearPileFilter, onError }: 
       })
       .sort((a, b) => b.event_date.localeCompare(a.event_date))
       .slice(0, 80);
-  }, [events, kind, pileIdFilter, q, pileById, batchById]);
+  }, [events, kind, pileIdFilter, alloyFilterId, q, pileById, batchById]);
 
   const showSaidas = kind === "saidas" || kind === "todos";
   const showEntradas = kind === "entradas" || kind === "todos";
@@ -176,7 +189,7 @@ export function ReleaseReportView({ pileIdFilter, onClearPileFilter, onError }: 
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {(["saidas", "entradas", "todos"] as const).map((k) => (
           <button
             key={k}
@@ -191,18 +204,28 @@ export function ReleaseReportView({ pileIdFilter, onClearPileFilter, onError }: 
             {k === "saidas" ? "Saídas" : k === "entradas" ? "Entradas" : "Todos"}
           </button>
         ))}
+        <select
+          value={alloyFilterId}
+          onChange={(e) => setAlloyFilterId(e.target.value)}
+          className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 shadow-sm dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+          aria-label="Filtrar por liga"
+        >
+          <option value="">Todas as ligas</option>
+          {alloys.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
       </div>
 
-      <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-        Buscar
-        <input
-          type="search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Destino, lote, liga…"
-          className="mt-1 w-full rounded-2xl border border-zinc-200 bg-white px-4 py-2.5 text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-        />
-      </label>
+      <input
+        type="search"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="buscar destino"
+        className="w-full rounded-2xl border border-zinc-200 bg-white px-4 py-2.5 text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+      />
 
       {showSaidas && (
         <section>

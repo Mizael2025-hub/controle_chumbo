@@ -50,7 +50,7 @@ export function AppSidebar({
           Cadastro de ligas
         </button>
         <button type="button" className={linkCls} onClick={onQuickSaida}>
-          Apontamento de saída
+          Saída de chumbo
         </button>
       </div>
     </aside>

@@ -20,7 +20,7 @@ import { CadastrosView } from "@/components/CadastrosView";
 import { ReleaseModal } from "@/components/ReleaseModal";
 import { ReservationModal } from "@/components/ReservationModal";
 import { useAuthUser } from "@/components/AuthUserContext";
-import { SyncStatusIndicator } from "@/components/SyncStatusIndicator";
+import { CloudSyncButton } from "@/components/CloudSyncButton";
 import { runManualCloudReconciliation } from "@/lib/syncEngine";
 
 import { AlloyDashboard, type AlloyDashboardRow } from "@/components/AlloyDashboard";
@@ -50,7 +50,7 @@ export function LeadApp(props: LeadAppProps = {}) {
   const [loteTab, setLoteTab] = useState<"ativos" | "encerrados">("ativos");
   const [quickSheetOpen, setQuickSheetOpen] = useState(false);
   const [reportPileId, setReportPileId] = useState<string | null>(null);
-  const [cadastroMode, setCadastroMode] = useState<"full" | "ligas" | "entrada">("full");
+  const [cadastroMode, setCadastroMode] = useState<"full" | "ligas" | "entrada">("ligas");
   const [appErrors, setAppErrors] = useState<AppErrorBannerEntry[]>([]);
   const [selectedAlloyId, setSelectedAlloyId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(() => new Set());
@@ -58,7 +58,7 @@ export function LeadApp(props: LeadAppProps = {}) {
   const [releaseOpen, setReleaseOpen] = useState(false);
   const [reservationOpen, setReservationOpen] = useState(false);
   const [cloudBusy, setCloudBusy] = useState(false);
-  const [lastManualSyncAt, setLastManualSyncAt] = useState<Date | null>(null);
+  const [syncFailed, setSyncFailed] = useState(false);
   const [editBatch, setEditBatch] = useState<LeadBatch | null>(null);
   const [editPile, setEditPile] = useState<LeadPile | null>(null);
   const [batchEditNum, setBatchEditNum] = useState("");
@@ -95,6 +95,7 @@ export function LeadApp(props: LeadAppProps = {}) {
     if (!m) return;
     console.error("[LeadApp] Erro de sincronização (fluxo Auth/Sync)", m);
     pushErrorEntry(m);
+    setSyncFailed(true);
     onClearSyncFatal?.();
   }, [syncFatalMessage, onClearSyncFatal, pushErrorEntry]);
 
@@ -217,11 +218,6 @@ export function LeadApp(props: LeadAppProps = {}) {
     }).format(d);
   };
 
-  const lastManualSyncLabel =
-    lastManualSyncAt == null
-      ? null
-      : `Última sincronização manual: ${formatIsoToBrDateTime(lastManualSyncAt.toISOString())}`;
-
   const batchUi = useMemo(() => {
     return batches
       .map((batch) => {
@@ -332,7 +328,7 @@ export function LeadApp(props: LeadAppProps = {}) {
           section={appSection}
           onNavigate={(s) => {
             setAppSection(s);
-            if (s === "cadastros") setCadastroMode("full");
+            if (s === "cadastros") setCadastroMode("ligas");
             if (s === "relatorio") setReportPileId(null);
           }}
           onQuickEntrada={() => {
@@ -355,23 +351,45 @@ export function LeadApp(props: LeadAppProps = {}) {
         }`}
       >
         <div className="ios-blur sticky top-0 z-20 border-b border-zinc-200/80 bg-[var(--background)]/90 px-4 pt-4 backdrop-blur-md dark:border-zinc-800/80">
-          <header className="mb-3 flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
-                Controle de chumbo
-              </h1>
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                Offline-first (Dexie). Sincronização opcional com a nuvem.
-              </p>
-            </div>
+          <header className="relative mb-3 flex min-h-[2.75rem] items-center justify-center">
+            <h1 className="px-24 text-center text-xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50 sm:text-2xl">
+              Controle de chumbo
+            </h1>
             {userId && supabase && (
-              <button
-                type="button"
-                className="shrink-0 rounded-full border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                onClick={() => void supabase.auth.signOut()}
-              >
-                Sair
-              </button>
+              <div className="absolute right-0 flex items-center gap-2">
+                <CloudSyncButton
+                  manualBusy={cloudBusy}
+                  lastFailed={syncFailed}
+                  onSync={async () => {
+                    setCloudBusy(true);
+                    try {
+                      await runManualCloudReconciliation(supabase, userId, {
+                        onPushError: (m) => {
+                          setSyncFailed(true);
+                          reportMessage(m);
+                        },
+                      });
+                      setSyncFailed(false);
+                    } catch (e) {
+                      setSyncFailed(true);
+                      reportCaught("Falha ao sincronizar com a nuvem", e);
+                    } finally {
+                      setCloudBusy(false);
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="rounded-full border-2 border-red-500 bg-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-red-700 active:scale-95 dark:border-red-600 dark:bg-red-700 dark:hover:bg-red-800"
+                  onClick={() => {
+                    if (window.confirm("Deseja realmente sair da sua conta?")) {
+                      void supabase.auth.signOut();
+                    }
+                  }}
+                >
+                  Sair
+                </button>
+              </div>
             )}
           </header>
 
@@ -380,27 +398,6 @@ export function LeadApp(props: LeadAppProps = {}) {
             onDismiss={(id) => setAppErrors((prev) => prev.filter((e) => e.id !== id))}
             onDismissAll={() => setAppErrors([])}
           />
-
-          {userId && supabase && (
-            <SyncStatusIndicator
-              variant="header"
-              manualSyncBusy={cloudBusy}
-              lastManualSyncLabel={lastManualSyncLabel}
-              onManualSync={async () => {
-                setCloudBusy(true);
-                try {
-                  await runManualCloudReconciliation(supabase, userId, {
-                    onPushError: (m) => reportMessage(m),
-                  });
-                  setLastManualSyncAt(new Date());
-                } catch (e) {
-                  reportCaught("Falha ao sincronizar com a nuvem", e);
-                } finally {
-                  setCloudBusy(false);
-                }
-              }}
-            />
-          )}
         </div>
 
         <main className="mx-auto flex w-full min-h-0 max-w-6xl flex-1 flex-col px-4 pb-8 pt-4">
@@ -438,15 +435,6 @@ export function LeadApp(props: LeadAppProps = {}) {
 
           {appSection === "estoque" && (
             <>
-              <p className="mb-3 text-sm text-zinc-600 dark:text-zinc-400">
-                Escolha a liga, depois o lote. Expanda para ver a grade. Toque duas vezes no monte para
-                selecionar; toque longo para opções.
-              </p>
-              {alloys.length > 0 && !selectedAlloyId && (
-                <p className="mb-3 text-sm text-amber-800 dark:text-amber-200/90">
-                  Nenhuma liga selecionada — escolha uma aba abaixo ou no Início.
-                </p>
-              )}
               <nav className="mb-4 flex flex-wrap gap-2">
                 {alloys.map((a) => (
                   <button
@@ -492,7 +480,7 @@ export function LeadApp(props: LeadAppProps = {}) {
               <div className="space-y-4">
                 {alloys.length === 0 && (
                   <p className="text-sm text-zinc-500">
-                    Nenhuma liga cadastrada. Use <strong>Cadastros</strong> para criar ligas e lotes.
+                    Nenhuma liga cadastrada. Use o menu <strong>Novo (+)</strong> para cadastrar ligas e lotes.
                   </p>
                 )}
                 {batches.length === 0 && selectedAlloyId && alloys.length > 0 && (
@@ -553,54 +541,49 @@ export function LeadApp(props: LeadAppProps = {}) {
                           : "border-zinc-200 dark:border-zinc-700"
                       }`}
                     >
-                      <div className="px-4 py-3">
-                        <div className="flex flex-wrap items-center justify-between gap-4">
-                          <div>
-                            <div className="font-semibold text-zinc-900 dark:text-zinc-50">
-                              Lote {batch.batch_number}
-                              {finished ? (
-                                <span className="ml-2 text-xs font-normal text-zinc-500">· Encerrado</span>
-                              ) : null}
-                            </div>
-                            <div className="text-xs text-zinc-500">
-                              Chegada: {formatIsoToBrDate(batch.arrival_date)} · Inicial:{" "}
-                              {batch.initial_total_bars} br / {batch.initial_total_weight} kg
-                            </div>
-                          </div>
-                          <div className="space-y-0.5 text-right text-sm">
-                            <div className="font-medium text-zinc-800 dark:text-zinc-200">
-                              Disponível: {formatIntPtBr(stock.available_bars)} br ·{" "}
-                              {formatKgPtBr(stock.available_weight)} kg
-                            </div>
-                            <div className="text-xs font-medium text-blue-700 dark:text-blue-400">
-                              Reservado: {formatIntPtBr(stock.reserved_bars)} br ·{" "}
-                              {formatKgPtBr(stock.reserved_weight)} kg
-                            </div>
-                            <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                              No estoque: {formatIntPtBr(stock.stock_bars)} br ·{" "}
-                              {formatKgPtBr(stock.stock_weight)} kg
-                            </div>
-                          </div>
-                        </div>
-                        <div className="mt-3 flex flex-wrap justify-end gap-4 border-t border-zinc-100 pt-2 text-xs dark:border-zinc-800">
-                          <button
-                            type="button"
-                            className="font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                            onClick={() => toggleBatch(batch.id)}
-                          >
-                            {open ? "Recolher grade" : "Expandir grade"}
-                          </button>
-                          <button
-                            type="button"
-                            className="font-medium text-emerald-800 hover:underline dark:text-emerald-400"
-                            onClick={() => setEditBatch(batch)}
-                          >
-                            Editar lote
-                          </button>
-                        </div>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleBatch(batch.id)}
+                        className="flex w-full flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-zinc-50 active:bg-zinc-100 dark:hover:bg-zinc-800/50"
+                      >
+                        <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+                          Lote {batch.batch_number}
+                          {finished ? (
+                            <span className="ml-1.5 text-xs font-normal text-zinc-500">· Encerrado</span>
+                          ) : null}
+                        </span>
+                        <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs sm:text-sm">
+                          <span className="font-medium text-emerald-800 dark:text-emerald-400">
+                            Disp. {formatIntPtBr(stock.available_bars)} br ·{" "}
+                            {formatKgPtBr(stock.available_weight)} kg
+                          </span>
+                          <span className="font-medium text-blue-700 dark:text-blue-400">
+                            Res. {formatIntPtBr(stock.reserved_bars)} br ·{" "}
+                            {formatKgPtBr(stock.reserved_weight)} kg
+                          </span>
+                        </span>
+                      </button>
                       {open && (
                         <div className="border-t border-zinc-100 px-3 pb-4 pt-2 dark:border-zinc-800">
+                          <div className="mb-2 flex flex-wrap items-start justify-between gap-2 text-xs text-zinc-500">
+                            <span>
+                              Chegada: {formatIsoToBrDate(batch.arrival_date)} · Inicial:{" "}
+                              {batch.initial_total_bars} br / {batch.initial_total_weight} kg
+                            </span>
+                            <span>
+                              No estoque: {formatIntPtBr(stock.stock_bars)} br ·{" "}
+                              {formatKgPtBr(stock.stock_weight)} kg
+                            </span>
+                          </div>
+                          <div className="mb-2 flex justify-end">
+                            <button
+                              type="button"
+                              className="text-xs font-medium text-emerald-800 hover:underline dark:text-emerald-400"
+                              onClick={() => setEditBatch(batch)}
+                            >
+                              Editar lote
+                            </button>
+                          </div>
                           <PileGrid
                             batchId={batch.id}
                             piles={piles}
@@ -648,7 +631,7 @@ export function LeadApp(props: LeadAppProps = {}) {
           section={appSection}
           onNavigate={(s) => {
             setAppSection(s);
-            if (s === "cadastros") setCadastroMode("full");
+            if (s === "cadastros") setCadastroMode("ligas");
             if (s === "relatorio") setReportPileId(null);
           }}
           onOpenQuickActions={() => setQuickSheetOpen(true)}
